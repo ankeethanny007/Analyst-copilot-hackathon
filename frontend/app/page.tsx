@@ -1,0 +1,14 @@
+"use client";
+
+import { FormEvent, useState } from "react";
+
+const steps = ["Upload complete", "Reading filing", "Extracting sections", "Extracting tables", "Extracting XBRL", "Building search index"];
+
+export default function Home() {
+  const [fileName, setFileName] = useState<string>();
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<{role: string; text: string; at: string; sources?: boolean}[]>([]);
+  const [thinking, setThinking] = useState(false); const [showSources, setShowSources] = useState(false);
+  function ask(event: FormEvent) { event.preventDefault(); const prompt = question.trim(); if (!prompt) return; setMessages(current => [...current, {role: "You", text: prompt, at: new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}]); setQuestion(""); setThinking(true); window.setTimeout(() => { setThinking(false); setMessages(current => [...current, {role: "Analyst Copilot", text: "Evidence found. Final cited answer generation will activate when the AI provider is configured.", at: new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}), sources: true}]); }, 650); }
+  return <main><aside><h1>Analyst Copilot</h1><button onClick={() => document.getElementById("filing")?.click()}>+ Add filing</button><input id="filing" type="file" accept=".htm,.html,.pdf" hidden onChange={e => setFileName(e.target.files?.[0]?.name)} /><h2>Chat topics</h2><p className="topic">JPMorgan — Q2 2022</p></aside><section><header><div><small>Active filing</small><h2>{fileName ?? "JPMORGAN_2022Q2_10Q.htm"}</h2></div><button>Rename chat</button></header>{fileName && <div className="processing"><strong>Processing {fileName}</strong>{steps.map((step, i) => <p key={step}>{i < 2 ? "✓" : i === 2 ? "●" : "○"} {step}</p>)}</div>}<div className="messages">{messages.map((m, i) => <article className={`bubble ${m.role === "Analyst Copilot" ? "assistant" : ""}`} key={i}><b>{m.role}</b><p>{m.text}</p>{m.sources && <button className="source-link" onClick={() => setShowSources(true)}>Page 64 · Markets revenue +2 more</button>}<time>{m.at}</time></article>)}{thinking && <div className="thinking">Understanding question · Searching filing · Reviewing evidence</div>}</div><form onSubmit={ask}><input value={question} onChange={e => setQuestion(e.target.value)} placeholder="Ask a question about this filing…" /><button>Send</button></form>{showSources && <div className="modal" role="dialog"><div className="panel"><button className="close" onClick={() => setShowSources(false)}>×</button><h2>Evidence</h2><article className="evidence"><b>1. Page 64 · Markets revenue</b><p>Exact source excerpts will be shown here sequentially.</p></article><article className="evidence"><b>2. Page 65 · Fixed Income Markets</b><p>Supporting context from this filing.</p></article></div></div>}</section></main>;
+}

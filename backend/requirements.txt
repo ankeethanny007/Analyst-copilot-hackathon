@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+python-multipart==0.0.20
+beautifulsoup4==4.14.3
+openai==1.59.7
+boto3==1.35.90
+supabase==2.11.0
+pytest==8.3.4
