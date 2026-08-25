@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup, Tag
 
 PAGE_BREAK = re.compile(r"page-break-after\s*:\s*always", re.I)
 HEADING = re.compile(r"^(item\s+\d+[a-z]?\.?|[A-Z][A-Z\s,&—–()\-]{8,})$", re.I)
+FINANCIAL_STATEMENT = re.compile(r"consolidated\s+(?:statements?\s+of\s+(?:cash\s+flows?|income|operations)|balance\s+sheets?)", re.I)
 
 
 @dataclass
@@ -88,8 +89,16 @@ def _parts_after_page_breaks(body: Tag) -> Iterable[str]:
 
 
 def _page_heading(soup: BeautifulSoup, fallback: str) -> str:
+    # SEC HTML repeats a "Table of Contents" label on many rendered pages.
+    # Prefer the actual financial-statement title when it appears anywhere on
+    # the page, so source links communicate useful evidence to the analyst.
+    statement = FINANCIAL_STATEMENT.search(normalized_text(soup))
+    if statement:
+        return statement.group(0).title().replace(" Of ", " of ")
     for node in soup.find_all(["h1", "h2", "h3", "h4", "b", "strong", "span", "div"]):
         text = normalized_text(node)
+        if text.lower() == "table of contents":
+            continue
         if 4 <= len(text) <= 120 and HEADING.match(text):
             return text
     return fallback
