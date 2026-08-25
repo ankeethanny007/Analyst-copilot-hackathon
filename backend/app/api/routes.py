@@ -12,6 +12,7 @@ from app.services.html_xbrl import parse_html_xbrl
 from app.services.qa import answer
 from app.services.answering import RetrievedEvidence, embed_question, generate_answer
 from app.services.benchmark import benchmark_case
+from app.services.filing_retrieval import relevant_tables, table_heading
 from app.services.supabase_repository import SupabaseRepository
 from app.services.auth import current_owner_id
 from app.services.r2 import storage_key, upload
@@ -153,6 +154,15 @@ def ask_question(topic_id: UUID, payload: AskQuestion, owner_id: str = Depends(c
                     evidence.append(RetrievedEvidence(None, section["id"], section["page_number"], section.get("heading") or "Filing section", section["content"][:1200], 1.0))
                     if len(evidence) == 3:
                         break
+            # Tables carry financial statement rows that prose-only retrieval
+            # often misses (e.g. growth, margins and cash-flow line items).
+            for table, rendered, score in relevant_tables(payload.content, db.tables(topic["document_id"])):
+                section_id = table.get("section_id")
+                if not section_id:
+                    continue
+                evidence.append(RetrievedEvidence(None, section_id, table["page_number"], table_heading(table, rendered), rendered[:1800], float(score)))
+                if len(evidence) == 6:
+                    break
             evidence.sort(key=lambda item: item.score, reverse=True)
             content, status = generate_answer(payload.content, evidence)
     except Exception as error:
