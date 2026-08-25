@@ -1,8 +1,8 @@
-"""Exact-response contracts for the bundled FinanceBench practice set.
+"""Read-only loader for the bundled FinanceBench-style evaluation set.
 
-The set is part of the MVP acceptance criteria.  When a user asks one of its
-verbatim questions against its matching filing, return its vetted answer while
-still resolving evidence from that filing on the server.
+This module is deliberately **not** part of the live chat path.  The supplied
+answers/pages are development and scoring data: runtime answers must come from
+the active filing's own retrieved evidence, including paraphrased questions.
 """
 
 from __future__ import annotations
@@ -62,5 +62,9 @@ def _cases() -> dict[tuple[str, str], BenchmarkCase]:
 
 
 def benchmark_case(filename: str, question: str) -> BenchmarkCase | None:
-    """Return a contract only for an exact practice-set question and filing."""
+    """Find an offline evaluation case by filename/question.
+
+    Kept for the benchmark tests and evaluator; production routes must not
+    call it or inject its answer into a chat response.
+    """
     return _cases().get((_normalise(Path(filename).stem), _normalise(question)))

@@ -7,12 +7,13 @@ import json
 import re
 import ssl
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from urllib.request import Request, urlopen
 
 import certifi
 
 
-ABSTENTION = "I don't have sufficient evidence in this filing to answer that."
+ABSTENTION = "Not found in this filing."
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
@@ -24,6 +25,20 @@ class RetrievedEvidence:
     heading: str
     excerpt: str
     score: float
+    # The first six fields are intentionally compatible with the original
+    # retrieval contract.  The remaining source snapshot fields make a table
+    # or Inline XBRL fact citeable after the chat history is reloaded.
+    source_type: str = "section"
+    source_anchor: str | None = None
+    table_id: str | None = None
+    table_title: str | None = None
+
+
+@dataclass(frozen=True)
+class AnswerResult:
+    content: str
+    status: str
+    citation_indices: tuple[int, ...]
 
 
 def embed_question(question: str) -> list[float]:
@@ -36,16 +51,44 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item["embedding"] for item in payload["data"]]
 
 
-def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[str, str]:
-    """Return answer/status; the model may only use labelled supplied excerpts."""
+def _citation_indices(content: str, source_count: int) -> tuple[int, ...]:
+    values = tuple(dict.fromkeys(int(value) for value in re.findall(r"\[S(\d+)\]", content)))
+    if not values or any(value < 1 or value > source_count for value in values):
+        return ()
+    return values
+
+
+def _result(content: str, status: str, evidence: list[RetrievedEvidence]) -> AnswerResult:
+    citations = _citation_indices(content, len(evidence)) if status == "supported" else ()
+    if status == "supported" and not citations:
+        return AnswerResult(ABSTENTION, "not_found", ())
+    return AnswerResult(content, status, citations)
+
+
+def generate_answer_result(question: str, evidence: list[RetrievedEvidence]) -> AnswerResult:
+    """Generate only a cited answer bounded by the supplied evidence.
+
+    A response is never marked supported merely because a model returned text:
+    it must cite one or more supplied source labels.  Number/calculation
+    provenance is enforced by the prompt and deterministic paths; citation
+    validation is the final server-side guard before a message is persisted.
+    """
     if not evidence:
-        return ABSTENTION, "not_found"
-    direct = _direct_metric_answer(question, evidence)
-    if direct:
-        return direct, "supported"
+        return AnswerResult(ABSTENTION, "not_found", ())
+    from .question_planning import plan_question
+
+    plan = plan_question(question)
     growth = _direct_growth_answer(question, evidence)
     if growth:
-        return growth, "supported"
+        return _result(growth, "supported", evidence)
+    # A question asking what caused or drove a result must explain the
+    # supported management discussion, not seize the first nearby numeric
+    # table value. Direct extraction remains a fast, exact path only for a
+    # direct metric question.
+    if plan.intent == "direct":
+        direct = _direct_metric_answer(question, evidence)
+        if direct:
+            return _result(direct, "supported", evidence)
     sources = "\n\n".join(
         f"[S{i + 1}: Page {item.page_number} · {item.heading}]\n{item.excerpt}"
         for i, item in enumerate(evidence)
@@ -54,16 +97,49 @@ def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[s
         "You are an evidence-first financial filing assistant. Answer only from the supplied source excerpts. "
         f"If they do not support a direct answer, reply exactly: {ABSTENTION} "
         "Do not use outside knowledge or invent numbers, dates, units, calculations, or citations. "
-        "Match the FinanceBench-style answer format: for information extraction, give the exact requested value or fact in the first sentence and cite it as [S#]. "
+        "Match the FinanceBench-style answer format: for information extraction, give the exact requested value or fact in the first sentence and cite it as [S#]. Cite every factual sentence with one or more [S#] labels. "
         "For numerical or logical reasoning (including growth, margins, or changes), give a one-sentence conclusion followed by a `Calculation:` line that states only the inputs and arithmetic supported by sources. "
         "For drivers of a change, identify only the causes explicitly discussed in the supplied management discussion or notes, and cite each source. "
-        "Do not restate the question, and never cite a source label that was not supplied."
+        "Do not restate the question, do not quote a source label that was not supplied, and do not claim a requested period or unit unless it appears in a source."
     )
-    response = _openai_post("/responses", {"model": os.getenv("OPENAI_MODEL", "gpt-5"), "instructions": instructions, "input": f"Question: {question}\n\nSources:\n{sources}"})
-    text = response.get("output_text", "").strip()
+    try:
+        response = _openai_post("/responses", {"model": os.getenv("OPENAI_MODEL", "gpt-5"), "instructions": instructions, "input": f"Question: {question}\n\nSources:\n{sources}"})
+    except Exception:
+        # Distinguish an unavailable answer service from an evidence-backed
+        # abstention.  The UI can offer a retry without incorrectly teaching
+        # the user that the filing lacks the answer.
+        return AnswerResult("The evidence review could not be completed. Please try again.", "failed", ())
+    # The SDK exposes `output_text` as a convenience property, but the raw
+    # REST response returned by urllib carries text inside output/message
+    # content blocks.  Reading only the SDK field made every non-deterministic
+    # answer look empty and therefore become a false "not found".
+    text = _response_text(response)
     if not text or text == ABSTENTION:
-        return ABSTENTION, "not_found"
-    return text, "supported"
+        return AnswerResult(ABSTENTION, "not_found", ())
+    return _result(text, "supported", evidence)
+
+
+def _response_text(response: dict) -> str:
+    direct = response.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    parts: list[str] = []
+    for output in response.get("output") or []:
+        if not isinstance(output, dict) or output.get("type") != "message":
+            continue
+        for content in output.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") in {"output_text", "text"} and isinstance(content.get("text"), str):
+                parts.append(content["text"].strip())
+    return "\n".join(part for part in parts if part).strip()
+
+
+def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[str, str]:
+    """Compatibility wrapper used by direct unit tests and local scripts."""
+    result = generate_answer_result(question, evidence)
+    return result.content, result.status
 
 
 def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
@@ -72,18 +148,116 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
     This deterministic path prevents a generative abstention from hiding an
     unambiguous value already present in the filing evidence.
     """
-    words = re.findall(r"[a-zA-Z]{3,}", question.lower())
-    candidates = [" ".join(words[index:index + size]) for size in range(min(4, len(words)), 1, -1) for index in range(len(words) - size + 1)]
-    for item_index, item in enumerate(evidence, start=1):
-        text = " ".join(item.excerpt.split())
-        for metric in candidates:
-            match = re.search(rf"\b({re.escape(metric)})\b\s*\(?[a-z]?\)?\s*\$?\s*([\d][\d,]*(?:\.\d+)?)", text, re.IGNORECASE)
-            if not match:
-                continue
-            label = match.group(1)
-            value = match.group(2)
-            unit = " million" if re.search(r"\bin millions\b", text, re.IGNORECASE) else ""
-            return f"Answer: {label[0].upper() + label[1:]} was ${value}{unit}. [S{item_index}]"
+    # Do not treat a time phrase such as "three months ended March" as a
+    # metric.  The former implementation did exactly that and could return a
+    # nearby year/date fragment as a confident financial answer.
+    from .question_planning import plan_question
+
+    plan = plan_question(question)
+    candidates = [
+        phrase
+        for phrase in (plan.answer_phrases or plan.phrases)
+        if len(phrase) >= 5
+        and phrase not in {"cash flow", "cash flows", "balance sheet", "income statement", "statement of income", "statement of operations"}
+        and not all(word in {"three", "months", "march", "ended", "year"} for word in phrase.split())
+    ]
+    # When the planner found a precise multi-word financial label, do not let
+    # a generic single token (for example `net`) capture an unrelated line
+    # earlier in the same balance sheet.
+    if any(len(phrase.split()) >= 2 for phrase in candidates):
+        candidates = [phrase for phrase in candidates if len(phrase.split()) >= 2]
+    # `PP&E` on its own refers to the gross balance-sheet line in many
+    # filings.  When the user explicitly requests net PP&E, only a candidate
+    # that retains that qualifier is eligible to answer; otherwise an exact
+    # generic match can return gross PP&E with false confidence.
+    if re.search(r"\bnet\s+pp(?:&e|e|ne)\b", question, re.I):
+        candidates = [phrase for phrase in candidates if "net" in phrase.lower()]
+    if not candidates:
+        words = [word for word in re.findall(r"[a-zA-Z]{3,}", question.lower()) if word not in {"three", "months", "march", "ended", "year", "answer", "using", "shown"}]
+        candidates = [" ".join(words[index:index + size]) for size in range(min(4, len(words)), 1, -1) for index in range(len(words) - size + 1)]
+    requested_years = list(plan.years)
+
+    def source_unit(text: str) -> str | None:
+        lowered = text.lower()
+        if re.search(r"\b(?:dollars?\s+)?in\s+billions\b", lowered):
+            return "billion"
+        if re.search(r"\b(?:dollars?\s+)?in\s+millions\b", lowered):
+            return "million"
+        if re.search(r"\b(?:dollars?\s+)?in\s+thousands\b", lowered):
+            return "thousand"
+        return None
+
+    def requested_unit(text: str) -> str | None:
+        lowered = text.lower()
+        if re.search(r"\b(?:usd|us\$|dollars?)?\s*(?:in\s+)?billions?\b", lowered):
+            return "billion"
+        if re.search(r"\b(?:usd|us\$|dollars?)?\s*(?:in\s+)?millions?\b", lowered):
+            return "million"
+        if re.search(r"\b(?:usd|us\$|dollars?)?\s*(?:in\s+)?thousands?\b", lowered):
+            return "thousand"
+        return None
+
+    def display_value(value: str, source: str | None, requested: str | None) -> tuple[str, str]:
+        if not source or not requested or source == requested:
+            return value, source or requested or ""
+        factors = {"thousand": Decimal("0.001"), "million": Decimal(1), "billion": Decimal(1000)}
+        try:
+            converted = Decimal(value.replace(",", "")) * factors[source] / factors[requested]
+        except (InvalidOperation, KeyError):
+            return value, source
+        # Converted values are analyst-facing units; retain two decimals to
+        # avoid hiding useful scale while preserving a stable result format.
+        rendered = f"{converted.quantize(Decimal('0.01')):,.2f}"
+        return rendered, requested
+
+    def amounts(value: str) -> list[str]:
+        return [
+            match.group(1)
+            for match in re.finditer(r"(?<![\w,])\$?\s*([\d][\d,]*(?:\.\d+)?)(?![\dA-Za-z])", value)
+            if not re.fullmatch(r"(?:19|20)\d{2}", match.group(1).replace(",", ""))
+        ]
+
+    def header_years(lines: list[str], line_index: int) -> list[str]:
+        # Check the nearby header first.  SEC tables usually place the dates
+        # directly above the line item, and values then follow the same order.
+        for offset in range(line_index, max(-1, line_index - 6), -1):
+            header = re.findall(r"\b(?:19|20)\d{2}\b", lines[offset])
+            if len(header) >= 2:
+                return header
+        return []
+
+    # Evidence is numbered in stable page order for the UI, but a formal
+    # consolidated statement may occur later than an overview table. Search
+    # the highest-ranked source first and keep its original [S#] label.
+    ordered_evidence = sorted(enumerate(evidence, start=1), key=lambda pair: (pair[1].score, pair[1].source_type == "table"), reverse=True)
+    for item_index, item in ordered_evidence:
+        lines = [line.strip() for line in item.excerpt.splitlines() if line.strip()] or [" ".join(item.excerpt.split())]
+        for line_index, line in enumerate(lines):
+            for metric in candidates:
+                match = re.search(rf"\b({re.escape(metric)})\b", line, re.IGNORECASE)
+                if not match:
+                    continue
+                values = amounts(line[match.end() :])
+                if not values:
+                    # Some compact table renderings lose newlines. Fall back
+                    # to the rest of the evidence only after finding the true
+                    # metric label, not an arbitrary question n-gram.
+                    values = amounts(item.excerpt[match.end() :])
+                if not values:
+                    continue
+                value = values[0]
+                years = header_years(lines, line_index)
+                if requested_years and years and requested_years[-1] in years and len(values) >= len(years):
+                    value = values[years.index(requested_years[-1])]
+                label = match.group(1)
+                lowered_question = question.lower()
+                if "capital expenditure" in lowered_question or re.search(r"\bcapex\b", lowered_question):
+                    label = "Capital expenditure"
+                elif "net ppne" in lowered_question or "net pp&e" in lowered_question:
+                    label = "Net PP&E"
+                value, unit_label = display_value(value, source_unit(item.excerpt), requested_unit(question))
+                unit = f" {unit_label}" if unit_label else ""
+                return f"Answer: {label[0].upper() + label[1:]} was ${value}{unit}. [S{item_index}]"
     return None
 
 
@@ -91,7 +265,7 @@ def _direct_growth_answer(question: str, evidence: list[RetrievedEvidence]) -> s
     """Calculate a year-over-year change only from a single cited table."""
     if not re.search(r"\b(growth|increase|decrease|decline|change)\b", question, re.I):
         return None
-    years = sorted(re.findall(r"\b(20\d{2})\b", question), reverse=True)
+    years = sorted(re.findall(r"(?:FY\s*)?(20\d{2})\b", question, re.I), reverse=True)
     if len(years) < 2:
         return None
     for index, item in enumerate(evidence, start=1):
