@@ -53,6 +53,10 @@ class SupabaseRepository:
         for start in range(0, len(rows), 250):
             self._request(f"/{table}", "POST", rows[start : start + 250], "return=minimal")
 
+    def upsert_many(self, table: str, rows: list[dict[str, Any]]) -> None:
+        for start in range(0, len(rows), 25):
+            self._request(f"/{table}?on_conflict=id", "POST", rows[start : start + 25], "resolution=merge-duplicates,return=minimal")
+
     def update(self, table: str, where: dict[str, str], row: dict[str, Any]) -> dict[str, Any] | None:
         rows = self._request(f"/{table}?{urlencode(where)}", "PATCH", row, "return=representation")
         return rows[0] if rows else None
