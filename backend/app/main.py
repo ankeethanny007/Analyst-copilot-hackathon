@@ -8,7 +8,7 @@ from app.api.routes import router
 app = FastAPI(title="Analyst Copilot API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
