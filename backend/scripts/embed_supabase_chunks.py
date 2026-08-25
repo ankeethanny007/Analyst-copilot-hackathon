@@ -32,9 +32,12 @@ def call(url: str, method: str, headers: dict, payload=None):
 
 
 def main() -> None:
-    query = urlencode({"document_id": f"eq.{DOCUMENT_ID}", "select": "id,document_id,section_id,page_number,content,content_type", "order": "id"})
+    query = urlencode({"document_id": f"eq.{DOCUMENT_ID}", "embedding": "is.null", "select": "id,document_id,section_id,page_number,content,content_type", "order": "id", "limit": 2000})
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     chunks = json.loads(call(f"{SUPABASE_URL}/document_chunks?{query}", "GET", headers))
+    if not chunks:
+        print(f"No pending chunks: {DOCUMENT_ID}")
+        return
     for start in range(0, len(chunks), 10):
         batch = chunks[start : start + 10]
         response = json.loads(call("https://api.openai.com/v1/embeddings", "POST", {"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"}, {"model": MODEL, "input": [row["content"] for row in batch], "dimensions": 1536}))
