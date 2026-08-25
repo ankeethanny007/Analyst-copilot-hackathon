@@ -1,0 +1,262 @@
+"""Hybrid, document-scoped evidence ranking for filing questions.
+
+Vector search is useful for paraphrases but unreliable on its own for financial
+tables, periods and exact line items.  These helpers merge semantic matches
+with lexical section scoring, statement-table scoring and persisted Inline
+XBRL facts.  The caller supplies rows *already scoped to one document*.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+import re
+from typing import Any
+
+from .answering import RetrievedEvidence
+from .filing_retrieval import render_table, table_heading
+from .question_planning import QuestionPlan
+
+
+SOURCE_ORDER = {"table": 0, "xbrl": 1, "section": 2}
+
+
+def _normalise(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def _concept_words(concept: str) -> str:
+    tail = concept.split(":")[-1]
+    tail = re.sub(r"([a-z])([A-Z])", r"\1 \2", tail)
+    return tail.replace("_", " ").replace("-", " ")
+
+
+def _excerpt(content: str, plan: QuestionPlan, limit: int = 1500) -> str:
+    """Return a bounded excerpt centred on the strongest requested term."""
+    compact = " ".join(content.split())
+    if len(compact) <= limit:
+        return compact
+    lowered = compact.lower()
+    positions = [lowered.find(value.lower()) for value in (*plan.phrases, *plan.terms) if value and lowered.find(value.lower()) >= 0]
+    start = max(0, min(positions) - limit // 4) if positions else 0
+    end = min(len(compact), start + limit)
+    if end < len(compact):
+        cut = compact.rfind(" ", start, end)
+        end = cut if cut > start else end
+    prefix = "…" if start else ""
+    suffix = "…" if end < len(compact) else ""
+    return f"{prefix}{compact[start:end].strip()}{suffix}"
+
+
+def _term_score(text: str, heading: str, plan: QuestionPlan) -> float:
+    haystack = _normalise(text)
+    title = _normalise(heading)
+    score = 0.0
+    for phrase in plan.phrases:
+        phrase = _normalise(phrase)
+        # A three-word line item such as "total net revenue" is much more
+        # diagnostic than a generic alias such as "revenue".  Count the
+        # requested phrase once with a specificity weight instead of letting
+        # repeated generic words in another table dominate the ranking.
+        phrase_weight = 3.0 + 6.0 * max(0, len(phrase.split()) - 1)
+        if phrase and phrase in haystack:
+            score += phrase_weight
+        if phrase and phrase in title:
+            score += phrase_weight + 4.0
+    for term in plan.terms:
+        if term in haystack:
+            score += 1.2
+        if term in title:
+            score += 3.0
+    for year in plan.years:
+        if year in haystack:
+            score += 2.0
+    if plan.statement_hint and plan.statement_hint in haystack:
+        score += 8.0
+    if plan.intent == "driver" and re.search(r"\b(due to|driven by|primarily|because|result of|impact of)\b", haystack):
+        score += 3.5
+    if plan.intent == "ownership" and re.search(r"\b(beneficial ownership|principal shareholders|stockholders)\b", haystack):
+        score += 8.0
+    if "table of contents" in title:
+        score -= 25.0
+    return score
+
+
+def _semantic_scores(matches: Iterable[dict[str, Any]]) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for row in matches:
+        section_id = row.get("section_id")
+        if not section_id:
+            continue
+        try:
+            similarity = float(row.get("similarity", 0.0))
+        except (TypeError, ValueError):
+            continue
+        # Do not use a hard threshold.  A semantic candidate still needs
+        # lexical/table evidence to beat unrelated content, but is never
+        # discarded solely because embedding scores vary by filing.
+        scores[section_id] = max(scores.get(section_id, 0.0), max(0.0, similarity) * 8.0)
+    return scores
+
+
+def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], semantic_matches: Iterable[dict[str, Any]], limit: int = 4) -> list[RetrievedEvidence]:
+    semantic = _semantic_scores(semantic_matches)
+    candidates: list[RetrievedEvidence] = []
+    for section in sections:
+        section_id = section.get("id")
+        content = section.get("content") or ""
+        if not section_id or not content:
+            continue
+        heading = section.get("heading") or "Filing section"
+        if _normalise(heading) == "table of contents":
+            continue
+        score = _term_score(content, heading, plan) + semantic.get(section_id, 0.0)
+        if score <= 0:
+            continue
+        candidates.append(
+            RetrievedEvidence(
+                None,
+                section_id,
+                int(section.get("page_number") or 0),
+                heading,
+                _excerpt(content, plan),
+                score,
+                source_type="section",
+                source_anchor=section.get("source_anchor"),
+            )
+        )
+    return sorted(candidates, key=lambda item: item.score, reverse=True)[:limit]
+
+
+def table_evidence(plan: QuestionPlan, tables: Iterable[dict[str, Any]], limit: int = 4) -> list[RetrievedEvidence]:
+    candidates: list[RetrievedEvidence] = []
+    for table in tables:
+        section_id = table.get("section_id")
+        if not section_id:
+            # A table without a page/section relationship is not safe enough
+            # to cite in a document-grounded response.
+            continue
+        rendered = render_table(table)
+        if not rendered:
+            continue
+        generic_title = (table.get("title") or "").strip().lower()
+        if (
+            generic_title == "table of contents"
+            or rendered.lstrip().lower().startswith("table of contents")
+            or re.search(r"\bbeginning\s+page\b.*\bitem\s+\d", rendered, re.I)
+            or (re.fullmatch(r"page\s+\d+", generic_title) and re.search(r"\bitem\s+\d\b", rendered, re.I))
+        ):
+            # A contents page is useful for navigation, never as financial
+            # evidence.  Its broad vocabulary otherwise creates false hits.
+            continue
+        heading = table_heading(table, rendered)
+        score = _term_score(rendered, heading, plan)
+        for phrase in plan.phrases:
+            if len(phrase.split()) >= 2 and re.search(rf"(?:^|\n)\s*{re.escape(phrase)}\b", rendered, re.I):
+                # A financial-statement row that exactly matches the metric
+                # is stronger evidence than a discussion/table that merely
+                # mentions the same words somewhere else.
+                score += 18.0
+        heading_lower = heading.lower()
+        if "consolidated" in heading_lower:
+            # Prefer the firm-wide statement/financial highlights over a
+            # business-line table when the question did not name a segment.
+            score += 18.0
+        if plan.intent == "direct" and re.search(r"\b(segment|markets|international|consumer|commercial|corporate)\b", heading_lower):
+            score -= 8.0
+        if plan.statement_hint and plan.statement_hint in _normalise(rendered):
+            score += 4.0
+        if re.search(r"\b(?:19|20)\d{2}\b", rendered) and plan.years:
+            score += 3.0
+        if score <= 0:
+            continue
+        candidates.append(
+            RetrievedEvidence(
+                None,
+                section_id,
+                int(table.get("page_number") or 0),
+                heading,
+                _excerpt(rendered, plan, limit=2100),
+                score + 3.0,  # Structured rows are especially valuable for numeric questions.
+                source_type="table",
+                source_anchor=table.get("source_anchor"),
+                table_id=table.get("id"),
+                table_title=table.get("title") or heading,
+            )
+        )
+    return sorted(candidates, key=lambda item: item.score, reverse=True)[:limit]
+
+
+def fact_evidence(plan: QuestionPlan, facts: Iterable[dict[str, Any]], sections: dict[str, dict[str, Any]], limit: int = 3) -> list[RetrievedEvidence]:
+    """Return citable Inline XBRL facts with a period/page/section binding."""
+    candidates: list[RetrievedEvidence] = []
+    for fact in facts:
+        section_id = fact.get("section_id")
+        section = sections.get(section_id or "")
+        page_number = fact.get("page_number") or (section or {}).get("page_number")
+        if not section_id or not section or not page_number:
+            continue
+        concept = _concept_words(str(fact.get("concept") or ""))
+        period = fact.get("period_end") or fact.get("instant_date") or ""
+        content = " | ".join(
+            part for part in (
+                f"Inline XBRL fact: {concept}",
+                f"Value: {fact.get('normalized_value') or fact.get('value')}",
+                f"Period: {period}" if period else "",
+                f"Unit: {fact.get('unit')}" if fact.get("unit") else "",
+            ) if part
+        )
+        score = _term_score(content, section.get("heading") or "", plan)
+        if plan.years and any(year in str(period) for year in plan.years):
+            score += 4.0
+        if score <= 0:
+            continue
+        candidates.append(
+            RetrievedEvidence(
+                None,
+                section_id,
+                int(page_number),
+                section.get("heading") or f"Inline XBRL fact: {concept}",
+                content,
+                score,
+                source_type="xbrl",
+                source_anchor=fact.get("source_anchor") or section.get("source_anchor"),
+            )
+        )
+    return sorted(candidates, key=lambda item: item.score, reverse=True)[:limit]
+
+
+def rank_evidence(
+    plan: QuestionPlan,
+    *,
+    sections: Iterable[dict[str, Any]],
+    semantic_matches: Iterable[dict[str, Any]],
+    tables: Iterable[dict[str, Any]],
+    facts: Iterable[dict[str, Any]],
+    limit: int = 7,
+) -> list[RetrievedEvidence]:
+    """Merge candidates, retain diversity, then put citations in page order."""
+    section_rows = list(sections)
+    section_map = {row["id"]: row for row in section_rows if row.get("id")}
+    candidates = [
+        *table_evidence(plan, tables),
+        *section_evidence(plan, section_rows, semantic_matches),
+        *fact_evidence(plan, facts, section_map),
+    ]
+    candidates.sort(key=lambda item: item.score, reverse=True)
+    selected: list[RetrievedEvidence] = []
+    seen: set[tuple[str, str, str]] = set()
+    source_counts: dict[str, int] = {}
+    for item in candidates:
+        key = (item.source_type, item.section_id, item.excerpt[:100])
+        if key in seen:
+            continue
+        # Do not let a long filing's repeated fact/table rows crowd out the
+        # narrative needed to explain a driver or a calculation.
+        if source_counts.get(item.source_type, 0) >= {"table": 3, "section": 3, "xbrl": 2}.get(item.source_type, 2):
+            continue
+        seen.add(key)
+        source_counts[item.source_type] = source_counts.get(item.source_type, 0) + 1
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return sorted(selected, key=lambda item: (item.page_number, SOURCE_ORDER.get(item.source_type, 9), -item.score))
