@@ -77,3 +77,10 @@ class SupabaseRepository:
     def keyword_sections(self, document_id: str, phrase: str) -> list[dict[str, Any]]:
         """Small lexical complement to semantic retrieval for exact filing terms."""
         return self.select("document_sections", {"document_id": f"eq.{document_id}", "content": f"ilike.*{phrase}*", "select": "id,page_number,heading,content", "order": "ordinal.asc", "limit": "6"})
+
+    def document_filename(self, document_id: str, owner_id: str) -> str | None:
+        rows = self.select("documents", {"id": f"eq.{document_id}", "owner_id": f"eq.{owner_id}", "select": "original_filename", "limit": "1"})
+        return rows[0]["original_filename"] if rows else None
+
+    def tables(self, document_id: str) -> list[dict[str, Any]]:
+        return self.select("document_tables", {"document_id": f"eq.{document_id}", "select": "section_id,page_number,title,content", "order": "page_number.asc", "limit": "500"})

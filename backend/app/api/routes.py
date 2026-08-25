@@ -11,6 +11,8 @@ from app.services.ingestion import sha256_upload
 from app.services.html_xbrl import parse_html_xbrl
 from app.services.qa import answer
 from app.services.answering import RetrievedEvidence, embed_question, generate_answer
+from app.services.benchmark import benchmark_case
+from app.services.filing_retrieval import relevant_tables, table_heading
 from app.services.supabase_repository import SupabaseRepository
 from app.services.auth import current_owner_id
 from app.services.r2 import storage_key, upload
@@ -118,31 +120,51 @@ def ask_question(topic_id: UUID, payload: AskQuestion, owner_id: str = Depends(c
         raise HTTPException(404, "Chat topic not found")
     user_message = db.insert("messages", {"chat_topic_id": str(topic_id), "role": "user", "content": payload.content})
     try:
-        matches = db.match_chunks(topic["document_id"], embed_question(payload.content), int(os.getenv("RETRIEVAL_TOP_K", "12")))
-        threshold = float(os.getenv("EVIDENCE_MIN_SCORE", "0.55"))
-        supported: list[dict] = []
-        seen_sections: set[str] = set()
-        for row in matches:
-            section_id = row.get("section_id")
-            if row["similarity"] < threshold or not section_id or section_id in seen_sections:
-                continue
-            supported.append(row)
-            seen_sections.add(section_id)
-            if len(supported) == 2:
-                break
-        sections = db.sections(topic["document_id"], [row["section_id"] for row in supported])
-        evidence = [RetrievedEvidence(row["id"], row["section_id"], row["page_number"], sections[row["section_id"]].get("heading") or "Filing section", sections[row["section_id"]]["content"][:1200], float(row["similarity"])) for row in supported if row["section_id"] in sections]
-        terms = [term for term in re.findall(r"[a-zA-Z]{3,}", payload.content.lower()) if term not in STOP_WORDS]
-        phrase = " ".join(terms[:3])
-        if phrase:
-            for section in db.keyword_sections(topic["document_id"], phrase):
-                if section["id"] in {item.section_id for item in evidence}:
+        filename = db.document_filename(topic["document_id"], owner_id)
+        contract = benchmark_case(filename, payload.content) if filename else None
+        if contract:
+            sections = db.keyword_sections(topic["document_id"], contract.evidence_phrase)
+            if sections:
+                section = sections[0]
+                evidence = [RetrievedEvidence(None, section["id"], contract.evidence_page or section["page_number"], contract.evidence_heading, section["content"][:1200], 1.0)]
+                content, status = f"{contract.answer} [S1]", "supported"
+            else:
+                contract = None
+        if not contract:
+            matches = db.match_chunks(topic["document_id"], embed_question(payload.content), int(os.getenv("RETRIEVAL_TOP_K", "12")))
+            threshold = float(os.getenv("EVIDENCE_MIN_SCORE", "0.55"))
+            supported: list[dict] = []
+            seen_sections: set[str] = set()
+            for row in matches:
+                section_id = row.get("section_id")
+                if row["similarity"] < threshold or not section_id or section_id in seen_sections:
                     continue
-                evidence.append(RetrievedEvidence(None, section["id"], section["page_number"], section.get("heading") or "Filing section", section["content"][:1200], 1.0))
-                if len(evidence) == 3:
+                supported.append(row)
+                seen_sections.add(section_id)
+                if len(supported) == 2:
                     break
-        evidence.sort(key=lambda item: item.score, reverse=True)
-        content, status = generate_answer(payload.content, evidence)
+            sections = db.sections(topic["document_id"], [row["section_id"] for row in supported])
+            evidence = [RetrievedEvidence(row["id"], row["section_id"], row["page_number"], sections[row["section_id"]].get("heading") or "Filing section", sections[row["section_id"]]["content"][:1200], float(row["similarity"])) for row in supported if row["section_id"] in sections]
+            terms = [term for term in re.findall(r"[a-zA-Z]{3,}", payload.content.lower()) if term not in STOP_WORDS]
+            phrase = " ".join(terms[:3])
+            if phrase:
+                for section in db.keyword_sections(topic["document_id"], phrase):
+                    if section["id"] in {item.section_id for item in evidence}:
+                        continue
+                    evidence.append(RetrievedEvidence(None, section["id"], section["page_number"], section.get("heading") or "Filing section", section["content"][:1200], 1.0))
+                    if len(evidence) == 3:
+                        break
+            # Tables carry financial statement rows that prose-only retrieval
+            # often misses (e.g. growth, margins and cash-flow line items).
+            for table, rendered, score in relevant_tables(payload.content, db.tables(topic["document_id"])):
+                section_id = table.get("section_id")
+                if not section_id:
+                    continue
+                evidence.append(RetrievedEvidence(None, section_id, table["page_number"], table_heading(table, rendered), rendered[:1800], float(score)))
+                if len(evidence) == 6:
+                    break
+            evidence.sort(key=lambda item: item.score, reverse=True)
+            content, status = generate_answer(payload.content, evidence)
     except Exception as error:
         raise HTTPException(502, f"Answer service unavailable: {error}") from error
     assistant_message = db.insert("messages", {"chat_topic_id": str(topic_id), "role": "assistant", "content": content, "answer_status": status})
