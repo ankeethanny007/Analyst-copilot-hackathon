@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.services.ingestion import sha256_upload
@@ -12,6 +12,8 @@ from app.services.html_xbrl import parse_html_xbrl
 from app.services.qa import answer
 from app.services.answering import RetrievedEvidence, embed_question, generate_answer
 from app.services.supabase_repository import SupabaseRepository
+from app.services.auth import current_owner_id
+from app.services.r2 import storage_key, upload
 
 router = APIRouter()
 
@@ -37,20 +39,6 @@ class LocalQuestion(BaseModel):
 STOP_WORDS = {"a", "an", "and", "for", "in", "is", "of", "the", "to", "was", "what", "with"}
 
 
-def current_owner_id(x_demo_owner_id: str | None = Header(default=None)) -> str:
-    """Temporary authenticated-owner boundary for the MVP.
-
-    Production frontend must replace this with verified Supabase JWT claims;
-    the backend only accepts the configured demo owner during local development.
-    """
-    configured = os.getenv("DEMO_OWNER_ID")
-    if not configured:
-        raise HTTPException(503, "Authentication is not configured")
-    if x_demo_owner_id and x_demo_owner_id != configured:
-        raise HTTPException(403, "Owner mismatch")
-    return configured
-
-
 def repository() -> SupabaseRepository:
     try:
         return SupabaseRepository()
@@ -59,16 +47,27 @@ def repository() -> SupabaseRepository:
 
 
 @router.post("/documents", status_code=202)
-async def upload_document(file: UploadFile = File(...)) -> dict:
-    """Day 1 contract. Persist to R2, hash, then enqueue processing in implementation."""
+async def upload_document(file: UploadFile = File(...), owner_id: str = Depends(current_owner_id), db: SupabaseRepository = Depends(repository)) -> dict:
+    """Persist the immutable original once, then enqueue document processing."""
     if file.content_type not in {"text/html", "application/pdf", "application/xhtml+xml"}:
         raise HTTPException(415, "Only HTML/Inline XBRL or PDF filings are supported")
     checksum, size_bytes = await sha256_upload(file)
-    document_id = uuid4()
-    topic_id = uuid4()
+    existing = db.select("documents", {"owner_id": f"eq.{owner_id}", "sha256": f"eq.{checksum}", "select": "id,original_filename,status"})
+    if existing:
+        topic_rows = db.select("chat_topics", {"owner_id": f"eq.{owner_id}", "document_id": f"eq.{existing[0]['id']}", "select": "id,document_id,title", "order": "created_at.asc", "limit": "1"})
+        return {"document": existing[0], "chat_topic": topic_rows[0] if topic_rows else None, "deduplicated": True}
+    document_id = str(uuid4())
+    key = storage_key(owner_id, checksum, file.filename or "filing")
+    try:
+        upload(file.file, key, file.content_type or "application/octet-stream")
+        document = db.insert("documents", {"id": document_id, "owner_id": owner_id, "original_filename": file.filename or "filing", "media_type": file.content_type, "sha256": checksum, "storage_key": key, "status": "queued"})
+        topic = db.insert("chat_topics", {"id": str(uuid4()), "owner_id": owner_id, "document_id": document_id, "title": Path(file.filename or "Filing").stem[:120]})
+        db.insert("processing_jobs", {"id": str(uuid4()), "document_id": document_id, "status": "queued", "stage": "queued", "progress": 10})
+    except Exception as error:
+        raise HTTPException(502, f"Upload storage unavailable: {error}") from error
     return {
-        "document": {"id": str(document_id), "filename": file.filename, "sha256": checksum, "size_bytes": size_bytes, "status": "queued"},
-        "chat_topic": {"id": str(topic_id), "document_id": str(document_id), "title": file.filename},
+        "document": {**document, "size_bytes": size_bytes},
+        "chat_topic": topic,
         "deduplicated": False,
     }
 

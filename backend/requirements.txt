@@ -8,4 +8,6 @@ openai==1.59.7
 boto3==1.35.90
 supabase==2.11.0
 certifi==2025.1.31
+PyJWT[crypto]==2.10.1
+pypdf==5.1.0
 pytest==8.3.4

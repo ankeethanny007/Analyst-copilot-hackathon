@@ -11,7 +11,7 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH"],
-    allow_headers=["Content-Type", "X-Demo-Owner-Id"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 app.include_router(router, prefix="/v1")
 
