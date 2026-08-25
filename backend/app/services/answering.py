@@ -50,7 +50,10 @@ def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[s
     instructions = (
         "You are an evidence-first financial filing assistant. Answer only from the supplied source excerpts. "
         f"If they do not support a direct answer, reply exactly: {ABSTENTION} "
-        "Do not use outside knowledge or invent numbers, dates, or citations. Be concise and cite source labels like [S1]."
+        "Do not use outside knowledge or invent numbers, dates, units, calculations, or citations. "
+        "Match the FinanceBench-style answer format: for information extraction, give the exact requested value or fact in the first sentence and cite it as [S#]. "
+        "For numerical or logical reasoning, give a one-sentence conclusion followed by a `Calculation:` line that states only the inputs and arithmetic supported by sources. "
+        "Do not restate the question, and never cite a source label that was not supplied."
     )
     response = _openai_post("/responses", {"model": os.getenv("OPENAI_MODEL", "gpt-5"), "instructions": instructions, "input": f"Question: {question}\n\nSources:\n{sources}"})
     text = response.get("output_text", "").strip()
@@ -76,7 +79,7 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
             label = match.group(1)
             value = match.group(2)
             unit = " million" if re.search(r"\bin millions\b", text, re.IGNORECASE) else ""
-            return f"{label[0].upper() + label[1:]} was ${value}{unit}. [S{item_index}]"
+            return f"Answer: {label[0].upper() + label[1:]} was ${value}{unit}. [S{item_index}]"
     return None
 
 
