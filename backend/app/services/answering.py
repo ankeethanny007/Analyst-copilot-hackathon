@@ -26,9 +26,13 @@ class RetrievedEvidence:
 
 
 def embed_question(question: str) -> list[float]:
+    return embed_texts([question])[0]
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
     model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    payload = _openai_post("/embeddings", {"model": model, "input": question, "dimensions": 1536})
-    return payload["data"][0]["embedding"]
+    payload = _openai_post("/embeddings", {"model": model, "input": texts, "dimensions": 1536})
+    return [item["embedding"] for item in payload["data"]]
 
 
 def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[str, str]:

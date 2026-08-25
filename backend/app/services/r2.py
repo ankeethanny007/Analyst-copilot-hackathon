@@ -20,3 +20,7 @@ def storage_key(owner_id: str, checksum: str, filename: str) -> str:
 
 def upload(file_object, key: str, content_type: str) -> None:
     client().upload_fileobj(file_object, os.environ["R2_BUCKET_NAME"], key, ExtraArgs={"ContentType": content_type})
+
+
+def download(key: str, destination: str) -> None:
+    client().download_file(os.environ["R2_BUCKET_NAME"], key, destination)

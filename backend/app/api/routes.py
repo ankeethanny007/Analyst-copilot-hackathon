@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.services.ingestion import sha256_upload
@@ -14,6 +14,7 @@ from app.services.answering import RetrievedEvidence, embed_question, generate_a
 from app.services.supabase_repository import SupabaseRepository
 from app.services.auth import current_owner_id
 from app.services.r2 import storage_key, upload
+from app.services.processing import process_document
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def repository() -> SupabaseRepository:
 
 
 @router.post("/documents", status_code=202)
-async def upload_document(file: UploadFile = File(...), owner_id: str = Depends(current_owner_id), db: SupabaseRepository = Depends(repository)) -> dict:
+async def upload_document(background_tasks: BackgroundTasks, file: UploadFile = File(...), owner_id: str = Depends(current_owner_id), db: SupabaseRepository = Depends(repository)) -> dict:
     """Persist the immutable original once, then enqueue document processing."""
     if file.content_type not in {"text/html", "application/pdf", "application/xhtml+xml"}:
         raise HTTPException(415, "Only HTML/Inline XBRL or PDF filings are supported")
@@ -63,6 +64,7 @@ async def upload_document(file: UploadFile = File(...), owner_id: str = Depends(
         document = db.insert("documents", {"id": document_id, "owner_id": owner_id, "original_filename": file.filename or "filing", "media_type": file.content_type, "sha256": checksum, "storage_key": key, "status": "queued"})
         topic = db.insert("chat_topics", {"id": str(uuid4()), "owner_id": owner_id, "document_id": document_id, "title": Path(file.filename or "Filing").stem[:120]})
         db.insert("processing_jobs", {"id": str(uuid4()), "document_id": document_id, "status": "queued", "stage": "queued", "progress": 10})
+        background_tasks.add_task(process_document, document_id, key, file.content_type or "text/html")
     except Exception as error:
         raise HTTPException(502, f"Upload storage unavailable: {error}") from error
     return {
