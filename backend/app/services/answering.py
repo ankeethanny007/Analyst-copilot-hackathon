@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import ssl
 from dataclasses import dataclass
 from urllib.request import Request, urlopen
@@ -39,6 +40,9 @@ def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[s
     """Return answer/status; the model may only use labelled supplied excerpts."""
     if not evidence:
         return ABSTENTION, "not_found"
+    direct = _direct_metric_answer(question, evidence)
+    if direct:
+        return direct, "supported"
     sources = "\n\n".join(
         f"[S{i + 1}: Page {item.page_number} · {item.heading}]\n{item.excerpt}"
         for i, item in enumerate(evidence)
@@ -53,6 +57,27 @@ def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[s
     if not text or text == ABSTENTION:
         return ABSTENTION, "not_found"
     return text, "supported"
+
+
+def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
+    """Return an exact reported metric when the question and source align.
+
+    This deterministic path prevents a generative abstention from hiding an
+    unambiguous value already present in the filing evidence.
+    """
+    words = re.findall(r"[a-zA-Z]{3,}", question.lower())
+    candidates = [" ".join(words[index:index + size]) for size in range(min(4, len(words)), 1, -1) for index in range(len(words) - size + 1)]
+    for item_index, item in enumerate(evidence, start=1):
+        text = " ".join(item.excerpt.split())
+        for metric in candidates:
+            match = re.search(rf"\b({re.escape(metric)})\b\s*\(?[a-z]?\)?\s*\$?\s*([\d][\d,]*(?:\.\d+)?)", text, re.IGNORECASE)
+            if not match:
+                continue
+            label = match.group(1)
+            value = match.group(2)
+            unit = " million" if re.search(r"\bin millions\b", text, re.IGNORECASE) else ""
+            return f"{label[0].upper() + label[1:]} was ${value}{unit}. [S{item_index}]"
+    return None
 
 
 def _openai_post(path: str, body: dict) -> dict:
