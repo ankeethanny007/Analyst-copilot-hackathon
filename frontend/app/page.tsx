@@ -3,8 +3,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 type Evidence = { ordinal?: number; excerpt: string; page_number?: number; heading?: string; document_sections?: { page_number: number; heading: string | null; source_anchor?: string | null } };
 type Message = { id: string; role: "user" | "assistant"; content: string; answer_status?: string | null; created_at: string; message_evidence?: Evidence[] };
@@ -79,8 +77,7 @@ export default function Home() {
   }
 
   async function signIn(event: FormEvent) {
-    event.preventDefault(); if (!SUPABASE_URL || !SUPABASE_KEY) { setError("Supabase browser credentials are not configured."); return; }
-    setSigningIn(true); setError(null); try { const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, { method: "POST", headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) }); const session = await response.json(); if (!response.ok) throw new Error(session.error_description ?? "Sign-in failed."); window.localStorage.setItem("analyst-copilot-access-token", session.access_token); setToken(session.access_token); setPassword(""); } catch (reason) { setError(reason instanceof Error ? reason.message : "Sign-in failed."); } finally { setSigningIn(false); }
+    event.preventDefault(); setSigningIn(true); setError(null); try { const response = await fetch("/api/auth/sign-in", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) }); const session = await response.json(); if (!response.ok) throw new Error(session.error_description ?? "Sign-in failed."); window.localStorage.setItem("analyst-copilot-access-token", session.access_token); setToken(session.access_token); setPassword(""); } catch (reason) { setError(reason instanceof Error ? reason.message : "Sign-in failed."); } finally { setSigningIn(false); }
   }
 
   if (!sessionReady) return <main className="auth-page"><section className="auth-card">Loading secure session…</section></main>;
