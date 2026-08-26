@@ -11,8 +11,10 @@ TOPIC_ID = "00000000-0000-0000-0000-000000000002"
 
 
 class FakeRepository:
-    def __init__(self, status: str = "ready") -> None:
+    def __init__(self, status: str = "ready", messages: list[dict] | None = None, direct_evidence: list[dict] | None = None) -> None:
         self.status = status
+        self.messages = messages or []
+        self.direct_evidence = direct_evidence or []
         self.inserts: list[tuple[str, dict]] = []
         self.updates: list[tuple[str, dict, dict]] = []
 
@@ -61,10 +63,12 @@ class FakeRepository:
     def select(self, table: str, params: dict):
         if table == "processing_jobs":
             return [{"status": self.status, "stage": "complete", "progress": 100}]
+        if table == "messages":
+            return self.messages
         return []
 
     def message_evidence_for_owner(self, message_id: str, owner_id: str):
-        return [] if owner_id == "owner-1" else None
+        return self.direct_evidence if owner_id == "owner-1" else None
 
 
 def _client(repository: FakeRepository, monkeypatch):
@@ -134,3 +138,37 @@ def test_persisted_sources_renumber_answer_citations_in_popup_order() -> None:
 
     assert content == "The answer is supported by [S2] and [S1]."
     assert cited == ["page-64", "page-80"]
+
+
+def test_list_messages_hides_legacy_evidence_when_the_answer_abstains(monkeypatch) -> None:
+    legacy_evidence = [{"ordinal": 1, "page_number": 1, "section_heading": "Table of Contents", "excerpt": "Unrelated source"}]
+    repository = FakeRepository(
+        messages=[
+            {"id": "user-1", "role": "user", "content": "Who is the major shareholder?", "answer_status": None, "created_at": "2026-08-25T00:00:00Z", "message_evidence": legacy_evidence},
+            {"id": "assistant-1", "role": "assistant", "content": "Not found in this filing.", "answer_status": "not_found", "created_at": "2026-08-25T00:00:01Z", "message_evidence": legacy_evidence},
+            {"id": "assistant-2", "role": "assistant", "content": "Revenue was $30,717 million. [S1]", "answer_status": "supported", "created_at": "2026-08-25T00:00:02Z", "message_evidence": legacy_evidence},
+        ]
+    )
+    client = _client(repository, monkeypatch)
+    try:
+        response = client.get(f"/v1/chat-topics/{TOPIC_ID}/messages")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    messages = response.json()
+    assert messages[0]["message_evidence"] == []
+    assert messages[1]["message_evidence"] == []
+    assert messages[2]["message_evidence"] == legacy_evidence
+
+
+def test_message_evidence_endpoint_returns_empty_for_an_abstention(monkeypatch) -> None:
+    repository = FakeRepository(direct_evidence=[])
+    client = _client(repository, monkeypatch)
+    try:
+        response = client.get("/v1/messages/00000000-0000-0000-0000-000000000003/evidence")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == []

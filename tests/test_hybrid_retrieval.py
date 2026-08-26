@@ -18,6 +18,9 @@ def test_direct_metric_prefers_a_consolidated_table_over_a_contents_mention() ->
 
     assert evidence[0].page_number == 80
     assert evidence[0].source_type == "table"
+    assert "\n" in evidence[0].excerpt
+    assert "Three months ended March 31" in evidence[0].excerpt
+    assert "Total net revenue" in evidence[0].excerpt
     result = generate_answer_result(plan.question, evidence)
     assert result.status == "supported"
     assert "$30,717 million" in result.content

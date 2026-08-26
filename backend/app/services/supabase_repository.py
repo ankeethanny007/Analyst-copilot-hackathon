@@ -241,11 +241,23 @@ class SupabaseRepository:
 
         `None` means the message is not visible to the owner.  Snapshot fields
         are included first; embedded source records are retained as a fallback
-        for answers written before migration 0002.
+        for answers written before migration 0002.  Evidence is intentionally
+        unavailable for an abstention or failed answer: a source link must
+        mean that the corresponding answer is supported by that source.
         """
-        messages = self.select("messages", {"id": f"eq.{message_id}", "select": "id,chat_topic_id", "limit": "1"})
+        messages = self.select(
+            "messages",
+            {
+                "id": f"eq.{message_id}",
+                "select": "id,chat_topic_id,role,answer_status",
+                "limit": "1",
+            },
+        )
         if not messages or not self.topic_for_owner(messages[0]["chat_topic_id"], owner_id):
             return None
+        message = messages[0]
+        if message.get("role") != "assistant" or message.get("answer_status") != "supported":
+            return []
         return self.select(
             "message_evidence",
             {
