@@ -20,6 +20,19 @@ import certifi
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
+def _supabase_headers(key: str) -> dict[str, str]:
+    """Build PostgREST headers for either legacy JWTs or modern secret keys.
+
+    Supabase's ``sb_secret_*`` keys are API keys, not JWTs, so sending one as
+    a Bearer token causes authentication to fail. Legacy service-role JWTs
+    still require the Authorization header for the existing PostgREST flow.
+    """
+    headers = {"apikey": key, "Content-Type": "application/json"}
+    if not key.startswith("sb_secret_"):
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
 def _bounded_limit(value: int, *, default: int, maximum: int) -> int:
     """Keep broad filing reads predictably bounded before they reach PostgREST."""
     if isinstance(value, bool):
@@ -38,7 +51,7 @@ class SupabaseRepository:
         if not url or not key:
             raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured on the backend")
         self.base_url = url.rstrip("/") + "/rest/v1"
-        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        self.headers = _supabase_headers(key)
 
     def _request(self, path: str, method: str = "GET", body: Any | None = None, prefer: str | None = None) -> Any:
         headers = dict(self.headers)
