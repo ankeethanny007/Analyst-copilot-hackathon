@@ -125,6 +125,127 @@ function evidenceLabel(evidence: Evidence[]) {
   return `${location} · ${first.heading}${evidence.length > 1 ? ` +${evidence.length - 1} more` : ""}`;
 }
 
+function evidenceKind(evidence: Evidence) {
+  if (evidence.source_type === "xbrl") return "Inline XBRL fact";
+  if (evidence.source_type === "table" || evidence.table_title) return "Table excerpt";
+  return "Filing excerpt";
+}
+
+function cleanedExcerpt(value: string) {
+  return value
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function tableRows(excerpt: string) {
+  // Table excerpts are persisted as plain text so that they remain durable
+  // across reprocessing.  Older excerpts have their original newlines
+  // compacted by retrieval; restore only visual row breaks at a clearly new
+  // row label.  The underlying labels and values are never changed.
+  const rowText = cleanedExcerpt(excerpt)
+    .replace(/\b((?:19|20)\d{2})\s+(?=[A-Z][^|]{1,90}\s*\|)/g, "$1\n")
+    .replace(/((?:[$€£¥]?\(?\d{1,3}(?:,\d{3})*(?:\.\d+)?%?\)?))\s+(?=[A-Z][^|]{1,90}\s*\|)/g, "$1\n");
+
+  return rowText
+    .split(/\n+/)
+    .map(row => row
+      .split(/\s*\|\s*/)
+      .map(cell => cell.trim())
+      .filter(Boolean))
+    .filter(row => row.length > 0)
+    .map(row => row.reduce<string[]>((cells, cell) => {
+      // EDGAR tables often store a currency symbol in its own cell.  Joining
+      // it to the following numeric cell makes the rendered value legible
+      // without changing either value.
+      if (/^[€£¥$]$/.test(cell)) {
+        cells.push(cell);
+        return cells;
+      }
+      if (cells.length && /^[€£¥$]$/.test(cells[cells.length - 1])) {
+        cells[cells.length - 1] = `${cells[cells.length - 1]}${cell}`;
+        return cells;
+      }
+      cells.push(cell);
+      return cells;
+    }, []));
+}
+
+function narrativeParagraphs(excerpt: string) {
+  return cleanedExcerpt(excerpt)
+    .split(/\n{2,}/)
+    .map(paragraph => paragraph.trim())
+    .filter(Boolean);
+}
+
+function inlineXbrlFields(excerpt: string) {
+  return cleanedExcerpt(excerpt)
+    .split(/\s*\|\s*/)
+    .map(field => {
+      const colon = field.indexOf(":");
+      return colon > 0
+        ? { label: field.slice(0, colon).trim(), value: field.slice(colon + 1).trim() }
+        : { label: "Evidence", value: field.trim() };
+    })
+    .filter(field => field.value);
+}
+
+function EvidenceExcerpt({ evidence }: { evidence: Evidence }) {
+  const kind = evidenceKind(evidence);
+
+  if (kind === "Table excerpt") {
+    const rows = tableRows(evidence.excerpt);
+    return (
+      <div className="evidence-excerpt evidence-table-excerpt">
+        <span className="evidence-kind">{kind}</span>
+        <div className="evidence-table" role="table" aria-label="Extracted filing table">
+          {rows.map((row, rowIndex) => (
+            <div className="evidence-table-row" role="row" key={`${rowIndex}-${row.join("-").slice(0, 36)}`}>
+              {row.map((cell, cellIndex) => <span className="evidence-table-cell" role="cell" key={`${cellIndex}-${cell.slice(0, 24)}`}>{cell}</span>)}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === "Inline XBRL fact") {
+    return (
+      <div className="evidence-excerpt evidence-fact-excerpt">
+        <span className="evidence-kind">{kind}</span>
+        <dl className="evidence-fact-list">
+          {inlineXbrlFields(evidence.excerpt).map((field, index) => (
+            <div key={`${field.label}-${index}`}>
+              <dt>{field.label}</dt>
+              <dd>{field.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    );
+  }
+
+  return (
+    <div className="evidence-excerpt evidence-narrative-excerpt">
+      <span className="evidence-kind">{kind}</span>
+      {narrativeParagraphs(evidence.excerpt).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 36)}`}>{paragraph}</p>)}
+    </div>
+  );
+}
+
+function citedEvidence(message: Message) {
+  const evidence = message.message_evidence ?? [];
+  if (message.role !== "assistant" || message.answer_status !== "supported" || !evidence.length) return [];
+
+  const citationOrdinals = new Set(
+    [...message.content.matchAll(/\[S(\d+)\]/g)].map(match => Number(match[1])),
+  );
+  if (!citationOrdinals.size) return [];
+  return evidence.filter((item, index) => citationOrdinals.has(item.ordinal ?? index + 1));
+}
+
 function normalizeDocuments(value: unknown): Filing[] {
   const candidates = Array.isArray(value)
     ? value
@@ -601,7 +722,7 @@ export default function Home() {
         <div className="messages" ref={messagesRef} aria-live="polite">
           {messageLoading && <div className="message-loading"><span className="loading-orb" aria-hidden="true" />Loading this chat…</div>}
           {!messageLoading && messages.map(message => {
-            const evidence = message.message_evidence ?? [];
+            const evidence = citedEvidence(message);
             return (
               <article className={`bubble ${message.role === "assistant" ? "assistant" : "user"}`} key={message.id}>
                 <div className="message-meta"><b>{message.role === "assistant" ? "Analyst Copilot" : "You"}</b>{message.answer_status && message.role === "assistant" && <span className={`answer-status ${message.answer_status}`}>{message.answer_status === "supported" ? "Evidence checked" : "Needs evidence"}</span>}</div>
@@ -645,7 +766,7 @@ export default function Home() {
                       return (
                         <article className="evidence" key={`${item.ordinal ?? index}-${item.excerpt.slice(0, 36)}`}>
                           <div><span className="evidence-number">{index + 1}</span><b>{location.page ? `Page ${location.page}` : "Filing evidence"} · {location.heading}</b></div>
-                          <p>{item.excerpt}</p>
+                          <EvidenceExcerpt evidence={item} />
                           {location.page && <button className="open-page-button" onClick={() => void openSourcePage(showSources.documentId, location.page!)}>Open full page</button>}
                         </article>
                       );

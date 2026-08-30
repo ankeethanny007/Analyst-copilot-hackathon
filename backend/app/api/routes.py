@@ -228,7 +228,7 @@ def rename_topic(topic_id: UUID, payload: RenameTopic, owner_id: str = Depends(c
 def list_messages(topic_id: UUID, owner_id: str = Depends(current_owner_id), db: SupabaseRepository = Depends(repository)) -> list[dict]:
     if not db.topic_for_owner(str(topic_id), owner_id):
         raise HTTPException(404, "Chat topic not found")
-    return db.select(
+    messages = db.select(
         "messages",
         {
             "chat_topic_id": f"eq.{topic_id}",
@@ -236,6 +236,20 @@ def list_messages(topic_id: UUID, owner_id: str = Depends(current_owner_id), db:
             "order": "created_at.asc",
         },
     )
+    # Historical rows from early MVP iterations can contain source snapshots
+    # even though the answer later abstained.  An evidence link is a claim of
+    # support, so never expose it unless the assistant answer is explicitly
+    # marked supported.  Keep the legacy rows in the database for auditability
+    # rather than deleting or rewriting a user's conversation history.
+    return [
+        {
+            **message,
+            "message_evidence": message.get("message_evidence", [])
+            if message.get("role") == "assistant" and message.get("answer_status") == "supported"
+            else [],
+        }
+        for message in messages
+    ]
 
 
 @router.get("/messages/{message_id}/evidence")
