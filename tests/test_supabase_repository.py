@@ -7,6 +7,32 @@ def _repository_with_select(fake_select):
     return repository
 
 
+def test_secret_api_key_uses_only_the_apikey_header(monkeypatch) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_example")
+
+    repository = SupabaseRepository()
+
+    assert repository.headers == {
+        "apikey": "sb_secret_example",
+        "Content-Type": "application/json",
+    }
+
+
+def test_legacy_service_role_jwt_keeps_bearer_authorization(monkeypatch) -> None:
+    legacy_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example"
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", legacy_jwt)
+
+    repository = SupabaseRepository()
+
+    assert repository.headers == {
+        "apikey": legacy_jwt,
+        "Authorization": f"Bearer {legacy_jwt}",
+        "Content-Type": "application/json",
+    }
+
+
 def test_owner_document_and_section_reads_are_bounded_and_scoped() -> None:
     calls: list[tuple[str, dict[str, str]]] = []
 
