@@ -688,7 +688,7 @@ export default function Home() {
                 </div>
                 <div className="topic-list">
                   {filing.topics.map(topic => (
-                    <button className={`topic-button ${activeTopicId === topic.id ? "active" : ""}`} key={topic.id} onClick={() => { setError(null); setActiveTopicId(topic.id); }}>
+                    <button className={`topic-button ${activeTopicId === topic.id ? "active" : ""}`} data-testid="topic" data-topic-id={topic.id} data-document-id={filing.id} key={topic.id} onClick={() => { setError(null); setActiveTopicId(topic.id); }}>
                       <span className="topic-dot" aria-hidden="true" />
                       <span className="topic-title">{topic.title}</span>
                     </button>
@@ -724,15 +724,15 @@ export default function Home() {
           {!messageLoading && messages.map(message => {
             const evidence = citedEvidence(message);
             return (
-              <article className={`bubble ${message.role === "assistant" ? "assistant" : "user"}`} key={message.id}>
-                <div className="message-meta"><b>{message.role === "assistant" ? "Analyst Copilot" : "You"}</b>{message.answer_status && message.role === "assistant" && <span className={`answer-status ${message.answer_status}`}>{message.answer_status === "supported" ? "Evidence checked" : "Needs evidence"}</span>}</div>
+              <article className={`bubble ${message.role === "assistant" ? "assistant" : "user"}`} data-testid="message" data-message-id={message.id} data-role={message.role} key={message.id}>
+                <div className="message-meta"><b>{message.role === "assistant" ? "Analyst Copilot" : "You"}</b>{message.answer_status && message.role === "assistant" && <span className={`answer-status ${message.answer_status}`} data-answer-status={message.answer_status}>{message.answer_status === "supported" ? "Evidence checked" : "Needs evidence"}</span>}</div>
                 <p>{message.content}</p>
-                {evidence.length > 0 && <button className="source-link" onClick={() => { setSourcePage(null); setShowSources({ evidence, documentId: activeTopic?.document_id ?? "" }); }}>{evidenceLabel(evidence)}</button>}
+                {evidence.length > 0 && <button className="source-link" data-testid="source-link" onClick={() => { setSourcePage(null); setShowSources({ evidence, documentId: activeTopic?.document_id ?? "" }); }}>{evidenceLabel(evidence)}</button>}
                 <time>{displayTime(message.created_at)}</time>
               </article>
             );
           })}
-          {isThinking && <div className="thinking" role="status"><span className="thinking-orbs" aria-hidden="true"><i className="thinking-orb orb-one" /><i className="thinking-orb orb-two" /><i className="thinking-orb orb-three" /></span><span>Understanding question <em>·</em> Searching filing <em>·</em> Reviewing evidence</span></div>}
+          {isThinking && <div className="thinking" data-testid="thinking" role="status"><span className="thinking-orbs" aria-hidden="true"><i className="thinking-orb orb-one" /><i className="thinking-orb orb-two" /><i className="thinking-orb orb-three" /></span><span>Understanding question <em>·</em> Searching filing <em>·</em> Reviewing evidence</span></div>}
           {activeTopic && !messageLoading && !messages.length && !isThinking && !isActiveBlocked && <div className="empty-chat"><span className="empty-icon">⌁</span><h2>Start an evidence-backed analysis</h2><p>Ask about financial performance, risks, ownership, or a filing table. Every supported answer includes its source.</p></div>}
           {!activeTopic && !messageLoading && <div className="empty-chat"><span className="empty-icon">⌁</span><h2>Select a filing topic</h2><p>Upload a filing once, then create as many focused chats as you need.</p></div>}
         </div>
@@ -764,10 +764,10 @@ export default function Home() {
                     {showSources.evidence.map((item, index) => {
                       const location = evidenceLocation(item);
                       return (
-                        <article className="evidence" key={`${item.ordinal ?? index}-${item.excerpt.slice(0, 36)}`}>
+                        <article className="evidence" data-testid="evidence-item" data-page-number={location.page ?? undefined} key={`${item.ordinal ?? index}-${item.excerpt.slice(0, 36)}`}>
                           <div><span className="evidence-number">{index + 1}</span><b>{location.page ? `Page ${location.page}` : "Filing evidence"} · {location.heading}</b></div>
                           <EvidenceExcerpt evidence={item} />
-                          {location.page && <button className="open-page-button" onClick={() => void openSourcePage(showSources.documentId, location.page!)}>Open full page</button>}
+                          {location.page && <button className="open-page-button" data-testid="open-full-page" onClick={() => void openSourcePage(showSources.documentId, location.page!)}>Open full page</button>}
                         </article>
                       );
                     })}

@@ -61,8 +61,31 @@ def _table_excerpt(content: str, plan: QuestionPlan, limit: int = 2100) -> str:
     if len(rendered) <= limit:
         return rendered
 
-    terms = tuple(value.lower() for value in (*plan.phrases, *plan.terms) if value)
-    focus = next((index for index, row in enumerate(rows) if any(term in row.lower() for term in terms)), 0)
+    def searchable(value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+    def focused_row(candidates: Iterable[str]) -> int | None:
+        normalised_candidates = [searchable(value) for value in candidates if searchable(value)]
+        for index, row in enumerate(rows):
+            haystack = searchable(row)
+            if any(candidate in haystack for candidate in normalised_candidates):
+                return index
+        return None
+
+    # An explicit answer phrase (including a filing-label alias such as
+    # "purchases of property") is more specific than a statement name such as
+    # "cash flows".  Long cash-flow statements otherwise retained their first
+    # generic operating-cash-flow row and discarded the requested capex row.
+    specific = sorted(
+        dict.fromkeys(plan.answer_phrases),
+        key=lambda value: (len(searchable(value).split()), len(searchable(value))),
+        reverse=True,
+    )
+    focus = focused_row(specific)
+    if focus is None:
+        focus = focused_row((*plan.phrases, *plan.terms))
+    if focus is None:
+        focus = 0
     # The first rows commonly carry the statement title, dates and units.
     selected = set(range(min(3, len(rows))))
     selected.update(range(max(0, focus - 1), min(len(rows), focus + 2)))

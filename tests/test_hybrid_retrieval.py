@@ -1,5 +1,5 @@
 from backend.app.services.answering import generate_answer_result
-from backend.app.services.hybrid_retrieval import rank_evidence
+from backend.app.services.hybrid_retrieval import _table_excerpt, rank_evidence
 from backend.app.services.question_planning import plan_question
 
 
@@ -61,3 +61,25 @@ def test_question_plan_identifies_period_statement_and_driver_intent() -> None:
     assert plan.statement_hint == "income statement"
     assert plan.years == ("2021", "2022")
     assert "operating margin" in plan.phrases
+
+
+def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
+    plan = plan_question(
+        "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "
+        "Give a response relying on the cash flow statement."
+    )
+    rows = [
+        "Consolidated Statement of Cash Flows",
+        "Years ended December 31 | 2018 | 2017 | 2016",
+        "(Millions)",
+        "Cash flows from operating activities | 6,439 | 6,240 | 6,662",
+        *[f"Other cash flow line {index} | {'x' * 180}" for index in range(12)],
+        "Purchases of property, plant and equipment (PP&E) | (1,577) | (1,373) | (1,420)",
+        "Free cash flow | 4,862 | 4,867 | 5,242",
+    ]
+
+    excerpt = _table_excerpt("\n".join(rows), plan, limit=900)
+
+    assert "Consolidated Statement of Cash Flows" in excerpt
+    assert "Purchases of property, plant and equipment" in excerpt
+    assert "Free cash flow" in excerpt

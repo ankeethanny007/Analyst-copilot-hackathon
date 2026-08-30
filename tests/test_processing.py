@@ -1,4 +1,5 @@
 from backend.app.services.html_xbrl import Chunk, FilingExtract, Page, Section
+from backend.app.services import processing
 from backend.app.services.processing import _persist_extract
 
 
@@ -35,3 +36,14 @@ def test_reprocessing_assigns_unique_stable_ids_to_repeated_chunks() -> None:
     second_ids = [row["id"] for row in second.rows["document_chunks"]]
     assert len(first_ids) == len(set(first_ids)) == 2
     assert first_ids == second_ids
+
+
+def test_embedding_batch_size_is_bounded_and_configurable(monkeypatch) -> None:
+    monkeypatch.delenv("EMBEDDING_BATCH_SIZE", raising=False)
+    assert processing._embedding_batch_size() == 50
+
+    monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "250")
+    assert processing._embedding_batch_size() == 100
+
+    monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "not-a-number")
+    assert processing._embedding_batch_size() == 50
