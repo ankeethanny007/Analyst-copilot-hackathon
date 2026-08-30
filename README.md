@@ -16,8 +16,12 @@ The backend always derives the active document from the chat topic and scopes ev
 
 1. Copy `.env.example` to `.env.local` and add Supabase, R2, and OpenAI credentials.
 2. For a new project, run the SQL files in `database/migrations/` in numeric order. For an existing project that already has `0001`, apply `0002_evidence_snapshots_and_xbrl_normalization.sql` and `0003_topic_document_owner_integrity.sql` once.
-3. Start the API: `cd backend && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && uvicorn app.main:app --reload`.
-4. Start the UI: `cd frontend && npm install && npm run dev`.
+3. Start the API: `cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/uvicorn app.main:app --env-file ../.env.local --reload`.
+4. Start the UI against that API: `cd frontend && npm install && NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev`.
+
+For a long ingestion or benchmark run, do not use `--reload`; run the API on
+a fixed port and point the UI at that same port. The development CORS policy
+explicitly supports local UI ports 3000 and 3004.
 
 After applying `0002`, use **Retry processing** on existing filings once. That refreshes their table headings, Inline XBRL periods and normalized values while preserving the snapshot evidence shown in historical chats.
 
