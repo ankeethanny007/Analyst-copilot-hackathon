@@ -1,51 +1,91 @@
 # Analyst Copilot
 
-Evidence-first Q&A over SEC filings. A filing is uploaded, stored once in Cloudflare R2, processed once, and reused by one or more document-scoped chat topics.
+Analyst Copilot is an evidence-first research assistant for SEC filings. Upload a filing once, then ask questions in document-scoped chats with page- and section-level sources.
 
-## MVP architecture
+## 1. Run locally after cloning and adding `.env`
 
-```text
-Next.js UI → FastAPI → Supabase PostgreSQL + pgvector
-                    ↘ Cloudflare R2 (original files)
-                    ↘ OpenAI (embeddings and answer generation)
-```
+### Prerequisites
 
-The backend always derives the active document from the chat topic and scopes every retrieval query to that `document_id`. It combines lexical sections, semantic chunks, statement tables, and page-addressable Inline XBRL facts before generating a cited answer. An answer is returned only with validated source labels; otherwise the API abstains with `Not found in this filing.`
+- Node.js 20+
+- Python 3.11+
+- A Supabase project with `pgvector`
+- A Cloudflare R2 bucket for original filing files
+- An OpenAI API key for embeddings and answer generation
 
-## Local setup
-
-1. Copy `.env.example` to `.env.local` and add Supabase, R2, and OpenAI credentials.
-2. For a new project, run the SQL files in `database/migrations/` in numeric order. For an existing project that already has `0001`, apply `0002_evidence_snapshots_and_xbrl_normalization.sql` and `0003_topic_document_owner_integrity.sql` once.
-3. Start the API: `cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/uvicorn app.main:app --env-file ../.env.local --reload`.
-4. Start the UI against that API: `cd frontend && npm install && NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev`.
-
-For a long ingestion or benchmark run, do not use `--reload`; run the API on
-a fixed port and point the UI at that same port. The development CORS policy
-explicitly supports local UI ports 3000 and 3004.
-
-After applying `0002`, use **Retry processing** on existing filings once. That refreshes their table headings, Inline XBRL periods and normalized values while preserving the snapshot evidence shown in historical chats.
-
-The supplied JPMorgan Inline XBRL filing and the 136-question `practice-questions.jsonl` benchmark are in `sample-data/`. The filing is intentionally the first ingestion target; PDFs have a page-text fallback after HTML/Inline XBRL (OCR, table extraction, and XBRL are intentionally not attempted for PDF). The benchmark is development/evaluation data, not an answer source at runtime. Once matching filings are uploaded and ready, run it with:
+### Setup
 
 ```bash
-PYTHONPATH=. python backend/scripts/evaluate_benchmark.py \
-  --api-base http://127.0.0.1:8000 \
-  --output /tmp/analyst-copilot-benchmark.json
+git clone https://github.com/ankeethanny007/Analyst-copilot-hackathon.git
+cd Analyst-copilot-hackathon
+cp .env.example .env.local
 ```
 
-Some FinanceBench records store a zero-based PDF page index while this HTML
-parser displays its first source page as Page 1. In that case add
-`--page-offset 1` for comparison only; the product still displays the actual
-filing page it retrieved.
+Fill in `.env.local` with Supabase, R2, and OpenAI values. Keep this file local: it is ignored by Git and must not be committed.
 
-Run the regression suite with `PYTHONPATH=.:backend backend/.venv/bin/pytest -q tests`.
+For a new Supabase project, run the SQL migrations in `database/migrations/` in numeric order. If the database already has the initial schema, apply the later migrations once.
 
-## Delivery plan
+Start the API in one terminal:
 
-- Day 1: storage, database, topic creation, upload/status UI.
-- Day 2: HTML/Inline XBRL extraction, pages/sections/tables/facts/chunks, embeddings.
-- Day 3: document-scoped retrieval, evidence validation, answer/abstention.
-- Day 4: polished chat, source evidence drawer, animations and responsive states.
-- Day 5: benchmark, context-isolation tests, demo hardening and approach note.
+```bash
+cd backend
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/uvicorn app.main:app --env-file ../.env.local --host 127.0.0.1 --port 8000
+```
 
-See `docs/implementation-plan.md`, `docs/api-contracts.md`, and `docs/approach-note.md`.
+Start the web app in a second terminal:
+
+```bash
+cd frontend
+npm install
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000), upload an `.htm`, `.html`, or `.pdf` filing, then wait for processing to finish before asking questions.
+
+To view the preprocessed shared dataset, use the same Supabase and R2 environment that was used for ingestion. With a new environment, upload the filings again; raw filings in `Files/` are deliberately not versioned.
+
+Useful checks:
+
+```bash
+PYTHONPATH=.:backend backend/.venv/bin/python -m pytest -q tests
+cd frontend && npm run build
+```
+
+## 2. Technical architecture
+
+```text
+Next.js UI
+    │
+    ▼
+FastAPI API ─── Supabase PostgreSQL + pgvector
+    │                    ├─ documents, pages, sections, tables, XBRL facts
+    │                    ├─ embeddings, chat topics, messages, evidence snapshots
+    │                    └─ owner/document isolation
+    ├── Cloudflare R2: original uploaded files
+    └── OpenAI: embeddings and evidence-bounded answer generation
+```
+
+**Ingestion.** HTML and Inline XBRL are the primary path: the processor extracts pages, headings, tables, XBRL facts, and searchable chunks. PDFs have a text/page fallback. The original file is stored in R2; normalized, queryable data is stored in Supabase.
+
+**Retrieval and answers.** Every chat topic belongs to one filing. The API derives the active `document_id` from that topic, then combines lexical search, vector search, statement tables, and XBRL facts only from that filing. The answer layer receives ranked evidence, cites it as `[S1]`, `[S2]`, and returns `Not found in this filing.` when the evidence is insufficient. It does not attach sources to abstentions.
+
+**Core API contracts.** All endpoints are rooted at `/v1`:
+
+- `POST /documents` uploads a filing; `GET /documents` lists it; `GET /documents/{id}/status` reports processing progress.
+- `POST /chat-topics`, `GET /chat-topics`, `PATCH /chat-topics/{id}`, and `DELETE /chat-topics/{id}` create, list, rename, and remove chats. Deleting a chat preserves the filing and its processed data.
+- `POST /chat-topics/{id}/messages` asks a question and returns the user message, assistant message, and evidence. `GET /messages/{id}/evidence` and `GET /documents/{id}/pages/{page}` expose the linked evidence.
+
+Request/response schemas and examples are in [docs/api-contracts.md](docs/api-contracts.md). The build plan and product decisions are in [docs/implementation-plan.md](docs/implementation-plan.md) and [docs/approach-note.md](docs/approach-note.md).
+
+## 3. Feature and UI highlights
+
+- Upload a filing once and reuse it across focused chat topics.
+- A filing card opens its latest chat; individual topics can be renamed or deleted without deleting the processed filing.
+- Document-scoped context: switching a topic switches the active filing and its retrieval boundary.
+- Clear upload and multi-stage processing feedback for reading, section/table extraction, Inline XBRL extraction, and search indexing.
+- Chat UI includes timestamps, user-first messages, animated thinking state, auto-scroll to the newest message, and a fixed composer.
+- Supported answers include compact links such as `Page 64 · Section 2 +2 more`.
+- The evidence popup presents supporting sources sequentially and can open the complete extracted filing page.
+- Source formatting distinguishes narrative excerpts, tables, and Inline XBRL facts for readability.
+- Server-side owner and document filtering prevents cross-filing retrieval; insufficient evidence produces an explicit abstention instead of a guessed answer.
