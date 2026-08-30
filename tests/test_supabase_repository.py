@@ -7,6 +7,32 @@ def _repository_with_select(fake_select):
     return repository
 
 
+def test_secret_api_key_uses_only_the_apikey_header(monkeypatch) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_example")
+
+    repository = SupabaseRepository()
+
+    assert repository.headers == {
+        "apikey": "sb_secret_example",
+        "Content-Type": "application/json",
+    }
+
+
+def test_legacy_service_role_jwt_keeps_bearer_authorization(monkeypatch) -> None:
+    legacy_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example"
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", legacy_jwt)
+
+    repository = SupabaseRepository()
+
+    assert repository.headers == {
+        "apikey": legacy_jwt,
+        "Authorization": f"Bearer {legacy_jwt}",
+        "Content-Type": "application/json",
+    }
+
+
 def test_owner_document_and_section_reads_are_bounded_and_scoped() -> None:
     calls: list[tuple[str, dict[str, str]]] = []
 
@@ -40,7 +66,7 @@ def test_owner_scoped_message_evidence_reads_snapshots() -> None:
     def fake_select(table: str, params: dict[str, str]):
         calls.append((table, params))
         if table == "messages":
-            return [{"id": "message-1", "chat_topic_id": "topic-1"}]
+            return [{"id": "message-1", "chat_topic_id": "topic-1", "role": "assistant", "answer_status": "supported"}]
         if table == "message_evidence":
             return [{"ordinal": 1, "page_number": 64, "section_heading": "Income statement"}]
         return []
@@ -55,6 +81,22 @@ def test_owner_scoped_message_evidence_reads_snapshots() -> None:
     assert evidence_call[0] == "message_evidence"
     assert "section_heading" in evidence_call[1]["select"]
     assert "table_title" in evidence_call[1]["select"]
+
+
+def test_message_evidence_is_not_exposed_for_an_abstention() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_select(table: str, params: dict[str, str]):
+        calls.append((table, params))
+        if table == "messages":
+            return [{"id": "message-1", "chat_topic_id": "topic-1", "role": "assistant", "answer_status": "not_found"}]
+        raise AssertionError(f"Unexpected evidence lookup: {table}")
+
+    repository = _repository_with_select(fake_select)
+    repository.topic_for_owner = lambda topic_id, owner_id: {"id": topic_id} if owner_id == "owner-1" else None
+
+    assert repository.message_evidence_for_owner("message-1", "owner-1") == []
+    assert [table for table, _ in calls] == ["messages"]
 
 
 def test_relevant_xbrl_facts_searches_concepts_before_using_a_small_fallback() -> None:

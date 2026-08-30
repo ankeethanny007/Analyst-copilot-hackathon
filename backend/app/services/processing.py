@@ -8,7 +8,9 @@ without duplicating pages, sections, tables, facts or chunks.
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -22,6 +24,45 @@ from .supabase_repository import SupabaseRepository
 
 def _stable_id(document_id: str, kind: str, key: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"analyst-copilot:{document_id}:{kind}:{key}"))
+
+
+def _bounded_environment_int(name: str, *, default: int, maximum: int) -> int:
+    """Read a safe positive batching/retry value from the process environment."""
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return min(max(value, 1), maximum)
+
+
+def _embedding_batch_size() -> int:
+    """Use a materially fewer requests without creating oversized payloads.
+
+    Most extracted chunks are much shorter than a single embedding model input.
+    Batching 50 of them cuts long-filing ingestion round trips by roughly five
+    times versus the original ten-row batches, while retaining a conservative
+    response size for a 1,536-dimension vector payload.
+    """
+    return _bounded_environment_int("EMBEDDING_BATCH_SIZE", default=50, maximum=100)
+
+
+def _embedding_retry_attempts() -> int:
+    return _bounded_environment_int("EMBEDDING_MAX_RETRIES", default=3, maximum=5)
+
+
+def _embed_with_retry(texts: list[str]) -> list[list[float]]:
+    """Absorb transient rate limits without downgrading a whole filing early."""
+    attempts = _embedding_retry_attempts()
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return embed_texts(texts)
+        except Exception as error:  # The caller records one honest lexical-only fallback after retries.
+            last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(min(2**attempt, 8))
+    assert last_error is not None
+    raise last_error
 
 
 def _job_update(
@@ -164,10 +205,11 @@ def process_document(document_id: str, storage_key: str, media_type: str, job_id
 
         embeddings_failed = False
         total = max(len(chunks), 1)
-        for start in range(0, len(chunks), 10):
-            batch = chunks[start : start + 10]
+        batch_size = _embedding_batch_size()
+        for start in range(0, len(chunks), batch_size):
+            batch = chunks[start : start + batch_size]
             try:
-                vectors = embed_texts([row["content"] for row in batch])
+                vectors = _embed_with_retry([row["content"] for row in batch])
                 for row, vector in zip(batch, vectors):
                     row["embedding"] = vector
                 db.upsert_many("document_chunks", batch)

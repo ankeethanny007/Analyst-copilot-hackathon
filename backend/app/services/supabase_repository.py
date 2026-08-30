@@ -20,6 +20,19 @@ import certifi
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
+def _supabase_headers(key: str) -> dict[str, str]:
+    """Build PostgREST headers for either legacy JWTs or modern secret keys.
+
+    Supabase's ``sb_secret_*`` keys are API keys, not JWTs, so sending one as
+    a Bearer token causes authentication to fail. Legacy service-role JWTs
+    still require the Authorization header for the existing PostgREST flow.
+    """
+    headers = {"apikey": key, "Content-Type": "application/json"}
+    if not key.startswith("sb_secret_"):
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
 def _bounded_limit(value: int, *, default: int, maximum: int) -> int:
     """Keep broad filing reads predictably bounded before they reach PostgREST."""
     if isinstance(value, bool):
@@ -38,7 +51,7 @@ class SupabaseRepository:
         if not url or not key:
             raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured on the backend")
         self.base_url = url.rstrip("/") + "/rest/v1"
-        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        self.headers = _supabase_headers(key)
 
     def _request(self, path: str, method: str = "GET", body: Any | None = None, prefer: str | None = None) -> Any:
         headers = dict(self.headers)
@@ -73,8 +86,11 @@ class SupabaseRepository:
             self._request(f"/{table}", "POST", rows[start : start + 250], "return=minimal")
 
     def upsert_many(self, table: str, rows: list[dict[str, Any]]) -> None:
-        for start in range(0, len(rows), 25):
-            self._request(f"/{table}?on_conflict=id", "POST", rows[start : start + 25], "resolution=merge-duplicates,return=minimal")
+        # Embedding rows are approximately tens of KB each. Fifty keeps a
+        # single PostgREST payload comfortably bounded while avoiding one HTTP
+        # call for every small extraction batch.
+        for start in range(0, len(rows), 50):
+            self._request(f"/{table}?on_conflict=id", "POST", rows[start : start + 50], "resolution=merge-duplicates,return=minimal")
 
     def update(self, table: str, where: dict[str, str], row: dict[str, Any]) -> dict[str, Any] | None:
         rows = self._request(f"/{table}?{urlencode(where)}", "PATCH", row, "return=representation")
@@ -241,11 +257,23 @@ class SupabaseRepository:
 
         `None` means the message is not visible to the owner.  Snapshot fields
         are included first; embedded source records are retained as a fallback
-        for answers written before migration 0002.
+        for answers written before migration 0002.  Evidence is intentionally
+        unavailable for an abstention or failed answer: a source link must
+        mean that the corresponding answer is supported by that source.
         """
-        messages = self.select("messages", {"id": f"eq.{message_id}", "select": "id,chat_topic_id", "limit": "1"})
+        messages = self.select(
+            "messages",
+            {
+                "id": f"eq.{message_id}",
+                "select": "id,chat_topic_id,role,answer_status",
+                "limit": "1",
+            },
+        )
         if not messages or not self.topic_for_owner(messages[0]["chat_topic_id"], owner_id):
             return None
+        message = messages[0]
+        if message.get("role") != "assistant" or message.get("answer_status") != "supported":
+            return []
         return self.select(
             "message_evidence",
             {

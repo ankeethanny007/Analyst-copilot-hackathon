@@ -47,6 +47,55 @@ def _excerpt(content: str, plan: QuestionPlan, limit: int = 1500) -> str:
     return f"{prefix}{compact[start:end].strip()}{suffix}"
 
 
+def _table_excerpt(content: str, plan: QuestionPlan, limit: int = 2100) -> str:
+    """Keep financial-statement rows intact for human-readable citations.
+
+    ``render_table`` uses one line per source row.  Collapsing that structure
+    into ordinary prose makes an otherwise precise source difficult to audit
+    in the evidence popup.  For small tables retain every row; for long ones,
+    retain the header and a short neighbourhood around the best matching row.
+    """
+    rows = [" | ".join(cell.strip() for cell in row.split("|") if cell.strip()) for row in content.splitlines()]
+    rows = [row for row in rows if row]
+    rendered = "\n".join(rows)
+    if len(rendered) <= limit:
+        return rendered
+
+    def searchable(value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+    def focused_row(candidates: Iterable[str]) -> int | None:
+        normalised_candidates = [searchable(value) for value in candidates if searchable(value)]
+        for index, row in enumerate(rows):
+            haystack = searchable(row)
+            if any(candidate in haystack for candidate in normalised_candidates):
+                return index
+        return None
+
+    # An explicit answer phrase (including a filing-label alias such as
+    # "purchases of property") is more specific than a statement name such as
+    # "cash flows".  Long cash-flow statements otherwise retained their first
+    # generic operating-cash-flow row and discarded the requested capex row.
+    specific = sorted(
+        dict.fromkeys(plan.answer_phrases),
+        key=lambda value: (len(searchable(value).split()), len(searchable(value))),
+        reverse=True,
+    )
+    focus = focused_row(specific)
+    if focus is None:
+        focus = focused_row((*plan.phrases, *plan.terms))
+    if focus is None:
+        focus = 0
+    # The first rows commonly carry the statement title, dates and units.
+    selected = set(range(min(3, len(rows))))
+    selected.update(range(max(0, focus - 1), min(len(rows), focus + 2)))
+    ordered = [row for index, row in enumerate(rows) if index in selected]
+    excerpt = "\n".join(ordered)
+    if len(excerpt) <= limit:
+        return excerpt
+    return _excerpt(excerpt, plan, limit=limit)
+
+
 def _term_score(text: str, heading: str, plan: QuestionPlan) -> float:
     haystack = _normalise(text)
     title = _normalise(heading)
@@ -107,7 +156,10 @@ def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], sem
         if not section_id or not content:
             continue
         heading = section.get("heading") or "Filing section"
-        if _normalise(heading) == "table of contents":
+        # Some HTML filings assign generic headings such as "Page 46" to
+        # contents pages.  Do not let their broad financial vocabulary become
+        # a plausible-looking but non-evidentiary source.
+        if _normalise(heading) == "table of contents" or _normalise(content).startswith("table of contents"):
             continue
         score = _term_score(content, heading, plan) + semantic.get(section_id, 0.0)
         if score <= 0:
@@ -175,7 +227,7 @@ def table_evidence(plan: QuestionPlan, tables: Iterable[dict[str, Any]], limit: 
                 section_id,
                 int(table.get("page_number") or 0),
                 heading,
-                _excerpt(rendered, plan, limit=2100),
+                _table_excerpt(rendered, plan, limit=2100),
                 score + 3.0,  # Structured rows are especially valuable for numeric questions.
                 source_type="table",
                 source_anchor=table.get("source_anchor"),
