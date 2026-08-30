@@ -156,7 +156,10 @@ def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], sem
         if not section_id or not content:
             continue
         heading = section.get("heading") or "Filing section"
-        if _normalise(heading) == "table of contents":
+        # Some HTML filings assign generic headings such as "Page 46" to
+        # contents pages.  Do not let their broad financial vocabulary become
+        # a plausible-looking but non-evidentiary source.
+        if _normalise(heading) == "table of contents" or _normalise(content).startswith("table of contents"):
             continue
         score = _term_score(content, heading, plan) + semantic.get(section_id, 0.0)
         if score <= 0:

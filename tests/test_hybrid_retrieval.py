@@ -7,6 +7,7 @@ def test_direct_metric_prefers_a_consolidated_table_over_a_contents_mention() ->
     plan = plan_question("What was total net revenue for the three months ended March 31, 2022?")
     sections = [
         {"id": "toc", "page_number": 2, "heading": "Table of Contents", "content": "Consolidated statements of income and total net revenue", "source_anchor": "page-2"},
+        {"id": "generic-toc", "page_number": 3, "heading": "Page 3", "content": "Table of Contents Consolidated statements of income and total net revenue", "source_anchor": "page-3"},
         {"id": "statement", "page_number": 80, "heading": "Consolidated statements of income", "content": "Total net revenue was reported in the statement.", "source_anchor": "page-80"},
     ]
     tables = [
@@ -18,6 +19,7 @@ def test_direct_metric_prefers_a_consolidated_table_over_a_contents_mention() ->
 
     assert evidence[0].page_number == 80
     assert evidence[0].source_type == "table"
+    assert all(item.page_number != 3 for item in evidence)
     assert "\n" in evidence[0].excerpt
     assert "Three months ended March 31" in evidence[0].excerpt
     assert "Total net revenue" in evidence[0].excerpt
