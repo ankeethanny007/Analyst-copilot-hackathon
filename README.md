@@ -66,9 +66,11 @@ FastAPI API ─── Supabase PostgreSQL + pgvector
     └── OpenAI: embeddings and evidence-bounded answer generation
 ```
 
-**Ingestion.** HTML and Inline XBRL are the primary path: the processor extracts pages, headings, tables, XBRL facts, and searchable chunks. PDFs have a text/page fallback. The original file is stored in R2; normalized, queryable data is stored in Supabase.
+**Ingestion.** HTML and Inline XBRL are the primary path: the processor extracts pages, headings, tables, XBRL facts, and searchable chunks. Before persistence, an upload whose filename explicitly states a year, quarter, or SEC form is checked against the filing metadata. A known mismatch is rejected with an actionable message in the filing panel, before it reaches R2 or Supabase. PDFs have a text/page fallback. The original file is stored in R2; normalized, queryable data is stored in Supabase.
 
-**Retrieval and answers.** Every chat topic belongs to one filing. The API derives the active `document_id` from that topic, then combines lexical search, vector search, statement tables, and XBRL facts only from that filing. The answer layer receives ranked evidence, cites it as `[S1]`, `[S2]`, and returns `Not found in this filing.` when the evidence is insufficient. It does not attach sources to abstentions.
+**Retrieval and answers.** Every chat topic belongs to one filing. The API derives the active `document_id` from that topic, then combines lexical search, vector search, statement tables, and XBRL facts only from that filing. Direct metrics and supported calculations—including growth, cross-statement metrics, organic-growth bridges, explicit zero values, and inventory turnover—use filing-derived values and preserve the requested period and units. The answer layer receives ranked evidence, cites it as `[S1]`, `[S2]`, and returns `Not found in this filing.` when the evidence is insufficient. It does not attach sources to abstentions.
+
+**Benchmark discipline.** The included 136-question set is an offline evaluator only. It records answer, cited-page, latency, and failure data for quality work; expected answers are never injected into live chat responses.
 
 **Core API contracts.** All endpoints are rooted at `/v1`:
 
@@ -81,8 +83,9 @@ Request/response schemas and examples are in [docs/api-contracts.md](docs/api-co
 ## 3. Feature and UI highlights
 
 - Upload a filing once and reuse it across focused chat topics.
-- Catch known filename/content filing mismatches before upload and show an
-  actionable warning in the filing panel.
+- Catch known filename/content filing mismatches before upload, explain the
+  expected versus embedded filing identity in the left panel, and avoid storing
+  invalid uploads.
 - A filing card opens its latest chat; individual topics can be renamed or deleted without deleting the processed filing.
 - Document-scoped context: switching a topic switches the active filing and its retrieval boundary.
 - Clear upload and multi-stage processing feedback for reading, section/table extraction, Inline XBRL extraction, and search indexing.
@@ -90,4 +93,7 @@ Request/response schemas and examples are in [docs/api-contracts.md](docs/api-co
 - Supported answers include compact links such as `Page 64 · Section 2 +2 more`.
 - The evidence popup presents supporting sources sequentially and can open the complete extracted filing page.
 - Source formatting distinguishes narrative excerpts, tables, and Inline XBRL facts for readability.
+- Filing-grounded calculation answers show their inputs and result, while the
+  evidence link retains each supporting filing source.
 - Server-side owner and document filtering prevents cross-filing retrieval; insufficient evidence produces an explicit abstention instead of a guessed answer.
+- The filing panel includes the submission attribution for the VRIZE AI Hackathon.
