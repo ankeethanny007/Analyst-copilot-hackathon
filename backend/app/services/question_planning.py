@@ -135,6 +135,10 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "dpo": ("accounts payable", "cost of sales", "inventories", "inventory"),
     "key agenda": ("other events", "supplemental indenture", "substitute issuer", "assumption of covenants"),
     "filing purpose": ("other events", "supplemental indenture", "substitute issuer", "assumption of covenants"),
+    # Analysts commonly describe organic growth as growth excluding M&A.
+    # Filings usually label the corresponding bridge as organic sales plus
+    # acquisitions/divestitures rather than using the abbreviation itself.
+    "m&a": ("organic sales", "acquisitions", "divestitures", "sales change", "business segment"),
 }
 
 

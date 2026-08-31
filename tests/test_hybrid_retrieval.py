@@ -229,6 +229,33 @@ def test_filing_purpose_excerpt_retains_operating_purpose_after_long_definitions
     assert "assumption of the Former Issuer's covenants" in evidence[0].excerpt
 
 
+def test_excluding_m_and_a_retrieves_the_organic_segment_sales_bridge() -> None:
+    plan = plan_question("Excluding the impact of M&A, which segment dragged down growth in 2022?")
+    sections = [
+        {
+            "id": "generic-growth",
+            "page_number": 20,
+            "heading": "Results",
+            "content": "Total company growth declined in 2022.",
+        },
+        {
+            "id": "segment-bridge",
+            "page_number": 25,
+            "heading": "Worldwide Sales Change By Business Segment",
+            "content": (
+                "Organic sales Acquisitions Divestitures Translation Total sales change "
+                "Safety and Industrial 1.0% 0% 0% (4.2)% (3.2)% "
+                "Consumer (0.9)% 0% (0.4)% (2.6)% (3.9)%"
+            ),
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert "organic sales" in plan.phrases
+    assert evidence[0].page_number == 25
+
+
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     plan = plan_question(
         "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "
