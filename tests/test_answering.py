@@ -143,10 +143,13 @@ def test_inventory_turnover_uses_same_year_ending_inventory() -> None:
         ),
     ]
 
-    answer, status = generate_answer("Calculate inventory turnover ratio for FY2022.", evidence)
+    answer, status = generate_answer(
+        "How many times has AES Corporation converted inventory? Calculate inventory turnover ratio for FY2022.",
+        evidence,
+    )
 
     assert status == "supported"
-    assert "9.5x" in answer
+    assert "AES has converted inventory 9.5 times in FY2022." in answer
     assert "10,069 / ending inventory 1,055" in answer
     assert "[S1][S2]" in answer
 

@@ -275,8 +275,14 @@ def _inventory_turnover_answer(question: str, evidence: list[RetrievedEvidence])
         return None
     ratio = cost_of_sales[1] / inventory[1]
     citations = "".join(f"[S{index}]" for index in dict.fromkeys((inventory[0], cost_of_sales[0])))
+    company_match = re.search(r"\b([A-Z][A-Za-z0-9&.-]*)\s+Corporation\b", question)
+    conclusion = (
+        f"{company_match.group(1)} has converted inventory {ratio:.1f} times in FY{year}."
+        if company_match
+        else f"FY{year} inventory turnover: {ratio:.1f}x."
+    )
     return (
-        f"FY{year} inventory turnover: {ratio:.1f}x. {citations}\n\n"
+        f"{conclusion} {citations}\n\n"
         f"Calculation: total cost of sales {cost_of_sales[1]:,.0f} / ending inventory {inventory[1]:,.0f} = {ratio:.1f}x."
     )
 
