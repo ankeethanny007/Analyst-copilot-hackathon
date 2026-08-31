@@ -187,7 +187,10 @@ def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], sem
                 section_id,
                 int(section.get("page_number") or 0),
                 heading,
-                _excerpt(content, plan),
+                # Filing-purpose and list answers often span one long SEC
+                # narrative block.  Keep enough context to include the
+                # operative purpose after the transaction/party definitions.
+                _excerpt(content, plan, limit=5000 if plan.intent == "list" else 1500),
                 score,
                 source_type="section",
                 source_anchor=section.get("source_anchor"),

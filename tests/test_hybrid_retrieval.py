@@ -130,6 +130,103 @@ def test_acquisition_question_prioritizes_the_acquisition_note_over_generic_year
     assert len(evidence) == 1
     assert evidence[0].page_number == 64
     assert "acquisitions and divestitures" in plan.phrases
+    assert plan.intent == "list"
+
+
+def test_dpo_question_retrieves_both_balance_sheet_and_income_statement_inputs() -> None:
+    plan = plan_question(
+        "What is FY2017 days payable outstanding (DPO)? Calculate using average accounts payable, "
+        "FY2017 COGS, and the change in inventory between FY2016 and FY2017 using the balance sheet "
+        "and the P&L statement."
+    )
+    sections = [
+        {"id": "balance", "page_number": 40, "heading": "Consolidated Balance Sheets"},
+        {"id": "income", "page_number": 38, "heading": "Consolidated Statements of Operations"},
+    ]
+    tables = [
+        {
+            "id": "balance-table",
+            "section_id": "balance",
+            "page_number": 40,
+            "title": "Consolidated Balance Sheets",
+            "content": {"rows": [["2016", "2017"], ["Inventories", "11,461", "16,047"], ["Accounts payable", "25,309", "34,616"]]},
+            "source_anchor": "page-40-table-1",
+        },
+        {
+            "id": "income-table",
+            "section_id": "income",
+            "page_number": 38,
+            "title": "Consolidated Statements of Operations",
+            "content": {"rows": [["2016", "2017"], ["Cost of sales", "88,265", "111,934"]]},
+            "source_anchor": "page-38-table-1",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[], limit=6)
+
+    assert plan.intent == "calculation"
+    assert plan.statement_hint is None
+    assert "accounts payable" in plan.phrases
+    assert "cost of sales" in plan.phrases
+    assert {item.page_number for item in evidence if item.source_type == "table"} == {38, 40}
+
+
+def test_filing_agenda_question_uses_narrative_answering_path() -> None:
+    plan = plan_question("What was the key agenda of the 8-K filing?")
+
+    assert plan.intent == "list"
+    assert "supplemental indenture" in plan.phrases
+    assert "substitute issuer" in plan.phrases
+
+
+def test_list_question_retains_all_items_from_a_long_narrative_note() -> None:
+    plan = plan_question("What major acquisitions were completed in FY2023?")
+    content = (
+        "Note 5 - Acquisitions and Divestitures. First acquisition: Czech packaging plant. "
+        + ("Transaction detail and purchase accounting. " * 45)
+        + "Second acquisition: Shanghai medical packaging site. "
+        + ("Additional transaction detail. " * 25)
+        + "Third acquisition: New Zealand protein packaging machinery manufacturer."
+    )
+    sections = [
+        {
+            "id": "acquisition-note",
+            "page_number": 64,
+            "heading": "Acquisitions",
+            "content": content,
+            "source_anchor": "page-64",
+        }
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert len(evidence[0].excerpt) > 1500
+    assert "Third acquisition" in evidence[0].excerpt
+
+
+def test_filing_purpose_excerpt_retains_operating_purpose_after_long_definitions() -> None:
+    plan = plan_question("What was the key agenda of this 8-K filing?")
+    content = (
+        "Item 8.01 Other Events. The Former Issuer and Substitute Issuer entered into "
+        "supplemental indentures with the trustee. "
+        + ("Defined notes, parties, dates and governing indenture details. " * 65)
+        + "The supplemental indentures relate to the substitution of the Substitute Issuer "
+        "for the Former Issuer and assumption of the Former Issuer's covenants."
+    )
+    sections = [
+        {
+            "id": "other-events",
+            "page_number": 1,
+            "heading": "Item 8.01 Other Events",
+            "content": content,
+            "source_anchor": "page-1",
+        }
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert "relate to the substitution" in evidence[0].excerpt
+    assert "assumption of the Former Issuer's covenants" in evidence[0].excerpt
 
 
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:

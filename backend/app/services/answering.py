@@ -108,9 +108,10 @@ def generate_answer_result(question: str, evidence: list[RetrievedEvidence]) -> 
         "Match the FinanceBench-style answer format: for information extraction, give the exact requested value or fact in the first sentence and cite it as [S#]. Cite every factual sentence with one or more [S#] labels. "
         "For numerical or logical reasoning (including growth, margins, or changes), give a one-sentence conclusion followed by a `Calculation:` line that states only the inputs and arithmetic supported by sources. "
         "For drivers of a change, identify only the causes explicitly discussed in the supplied management discussion or notes, and cite each source. "
+        "For a list or filing-purpose question, return every responsive item disclosed in the supplied excerpt. If a requested period has no disclosed item in those sources, state that no item is listed for that period instead of discarding the supported items. "
         "For an analytical judgment framed as `based on` filing data (for example, capital intensity), make a clearly labelled inference from disclosed values and a simple stated calculation; do not present that inference as a quoted management conclusion. "
         "Lead with the metric or conclusion label (never a bare number). Preserve the requested unit: label a turnover or other multiple with `x`, and label percentages with `%`. Keep the response under 180 words and use at most three bullets after the conclusion or calculation. "
-        "Reply exactly `Not found in this filing.` if the supplied excerpts do not contain every requested fact, period, unit, and calculation input needed for the answer; for a driver question, abstain unless they contain an explicit management explanation. "
+        "Except for the list/filing-purpose rule above, reply exactly `Not found in this filing.` if the supplied excerpts do not contain every requested fact, period, unit, and calculation input needed for the answer; for a driver question, abstain unless they contain an explicit management explanation. "
         "If an excerpt contains an explicit requested metric or driver under a neutral heading such as `Filing section`, it is still valid filing evidence: answer from it rather than abstaining. "
         "Do not restate the question, do not quote a source label that was not supplied, and do not claim a requested period or unit unless it appears in a source."
     )
@@ -382,6 +383,9 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
 
 def _direct_growth_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
     """Calculate a year-over-year change only from a single cited table."""
+    from .question_planning import is_requested_statement_heading, plan_question
+
+    plan = plan_question(question)
     lowered_question = " ".join(question.lower().split())
     metric_aliases = {
         "gross revenue": ("net sales", "revenue", "revenues"),
@@ -408,7 +412,19 @@ def _direct_growth_answer(question: str, evidence: list[RetrievedEvidence]) -> s
     if len(years) < 2:
         return None
     allowed_labels = metric_aliases[requested_metric]
-    for index, item in enumerate(evidence, start=1):
+    indexed_evidence = list(enumerate(evidence, start=1))
+    statement_sources = [
+        pair
+        for pair in indexed_evidence
+        if pair[1].source_type in {"table", "xbrl"}
+        and is_requested_statement_heading(pair[1].heading, plan.statement_hint)
+    ]
+    ordered_evidence = sorted(
+        statement_sources or indexed_evidence,
+        key=lambda pair: (pair[1].score, pair[1].source_type == "table"),
+        reverse=True,
+    )
+    for index, item in ordered_evidence:
         text = " ".join(item.excerpt.split())
         if not all(year in text for year in years):
             continue

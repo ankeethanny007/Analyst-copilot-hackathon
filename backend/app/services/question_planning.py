@@ -131,6 +131,10 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "liquidity": ("liquidity", "cash and cash equivalents", "current assets", "current liabilities"),
     "acquisition": ("business acquisition", "acquisitions and divestitures", "completed the acquisition"),
     "acquisitions": ("business acquisitions", "acquisitions and divestitures", "completed the acquisition"),
+    "days payable outstanding": ("accounts payable", "cost of sales", "inventories", "inventory"),
+    "dpo": ("accounts payable", "cost of sales", "inventories", "inventory"),
+    "key agenda": ("other events", "supplemental indenture", "substitute issuer", "assumption of covenants"),
+    "filing purpose": ("other events", "supplemental indenture", "substitute issuer", "assumption of covenants"),
 }
 
 
@@ -180,10 +184,11 @@ def _tokens(question: str) -> list[str]:
 
 def _statement_hint(question: str) -> str | None:
     lowered = question.lower()
+    hints: list[str] = []
     if any(value in lowered for value in ("cash flow", "cash flows", "cash-flow")):
-        return "cash flow"
+        hints.append("cash flow")
     if any(value in lowered for value in ("balance sheet", "financial position", "statement of financial position")):
-        return "balance sheet"
+        hints.append("balance sheet")
     if any(
         value in lowered
         for value in (
@@ -196,10 +201,12 @@ def _statement_hint(question: str) -> str | None:
             "p&l",
         )
     ):
-        return "income statement"
+        hints.append("income statement")
     if any(value in lowered for value in ("management discussion", "mda", "md&a")):
-        return "management discussion"
-    return None
+        hints.append("management discussion")
+    # A cross-statement ratio must retrieve each stated source. Preferring the
+    # first phrase can crowd the other statement out before answer generation.
+    return hints[0] if len(set(hints)) == 1 else None
 
 
 def is_requested_statement_heading(
@@ -257,6 +264,10 @@ def _intent(question: str) -> tuple[str, bool]:
         return "driver", calculation
     if re.search(r"\b(who|stakeholder|shareholder|beneficial owner|ownership)\b", lowered):
         return "ownership", calculation
+    if re.search(r"\b(?:key agenda|filing purpose|purpose of (?:the )?filing)\b", lowered):
+        return "list", False
+    if re.search(r"\bwhat\b[^?]{0,80}\bacquisitions?\b", lowered):
+        return "list", False
     if calculation:
         return "calculation", True
     if re.search(r"\b(which|list|what securities|registered)\b", lowered):

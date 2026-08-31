@@ -65,6 +65,38 @@ def test_formula_input_change_does_not_trigger_unrelated_growth_shortcut() -> No
     assert answer is None
 
 
+def test_growth_calculation_prefers_the_requested_formal_statement() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "summary",
+            18,
+            "Selected Consolidated Financial Data",
+            "2016 2017 Net sales $135,987 $177,866",
+            99.0,
+            source_type="table",
+        ),
+        RetrievedEvidence(
+            None,
+            "income",
+            38,
+            "Consolidated Statements of Operations",
+            "2016 2017 Net sales $135,987 $177,866",
+            1.0,
+            source_type="table",
+        ),
+    ]
+
+    answer, status = generate_answer(
+        "What was the change in revenue from FY2016 to FY2017 using the income statement?",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "30.8%" in answer
+    assert answer.endswith("[S2]")
+
+
 def test_direct_metric_converts_a_source_million_value_to_requested_billions() -> None:
     evidence = [RetrievedEvidence(None, "section", 57, "Consolidated Balance Sheet", "(Dollars in millions) 2018 | Property, plant and equipment — net | $ | 8,700", 1.0)]
 
