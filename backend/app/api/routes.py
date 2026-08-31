@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app.services.answering import embed_question, generate_answer_result
@@ -224,6 +225,21 @@ def rename_topic(topic_id: UUID, payload: RenameTopic, owner_id: str = Depends(c
     return updated
 
 
+@router.delete("/chat-topics/{topic_id}", status_code=204)
+def delete_topic(topic_id: UUID, owner_id: str = Depends(current_owner_id), db: SupabaseRepository = Depends(repository)) -> Response:
+    """Delete one owner-scoped chat without touching its persistent filing.
+
+    The database's foreign-key cascade removes the messages and their source
+    snapshots belonging to this conversation only. Documents, processing
+    output, embeddings, and the original R2 object are intentionally left in
+    place so the filing can be reused immediately in a new chat.
+    """
+    if not db.topic_for_owner(str(topic_id), owner_id):
+        raise HTTPException(404, "Chat topic not found")
+    db.delete("chat_topics", {"id": f"eq.{topic_id}", "owner_id": f"eq.{owner_id}"})
+    return Response(status_code=204)
+
+
 @router.get("/chat-topics/{topic_id}/messages")
 def list_messages(topic_id: UUID, owner_id: str = Depends(current_owner_id), db: SupabaseRepository = Depends(repository)) -> list[dict]:
     if not db.topic_for_owner(str(topic_id), owner_id):
@@ -271,27 +287,49 @@ def ask_question(topic_id: UUID, payload: AskQuestion, owner_id: str = Depends(c
         stage = document.get("status", "processing")
         raise HTTPException(409, f"This filing is still {stage}. Wait for processing to complete before asking a question.")
 
-    # Do not let an optional embedding/API failure turn a lexical/table/XBRL
-    # answer into a false "not found" result.
-    semantic_matches: list[dict] = []
-    try:
-        semantic_matches = db.match_chunks(
-            topic["document_id"],
-            embed_question(payload.content),
-            int(os.getenv("RETRIEVAL_TOP_K", "20")),
-        )
-    except Exception:
-        semantic_matches = []
-
     plan = plan_question(payload.content)
-    sections = db.all_sections(topic["document_id"])
+    document_id = topic["document_id"]
+    # Exact, multi-word direct metrics are answered deterministically from
+    # lexical/table evidence. Skipping their embedding round-trip keeps common
+    # filing lookups responsive without reducing document scope or citation
+    # checks. Broader and analytical questions retain hybrid retrieval.
+    use_semantic = plan.intent != "direct" or not any(len(phrase.split()) >= 2 for phrase in plan.answer_phrases)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        sections_future = executor.submit(db.all_sections, document_id)
+        tables_future = executor.submit(db.tables, document_id)
+        facts_future = executor.submit(db.relevant_xbrl_facts, document_id, plan.terms)
+        embedding_future = executor.submit(embed_question, payload.content) if use_semantic else None
+
+        # Do not let an optional embedding/API failure turn a lexical/table/XBRL
+        # answer into a false "not found" result.
+        semantic_matches: list[dict] = []
+        if embedding_future is not None:
+            try:
+                semantic_matches = db.match_chunks(
+                    document_id,
+                    embedding_future.result(),
+                    int(os.getenv("RETRIEVAL_TOP_K", "20")),
+                )
+            except Exception:
+                semantic_matches = []
+        sections = sections_future.result()
+        tables = tables_future.result()
+        facts = facts_future.result()
+
+    try:
+        configured_limit = int(os.getenv("EVIDENCE_MAX_SOURCES", "5"))
+    except ValueError:
+        configured_limit = 5
+    evidence_limit = max(3, min(configured_limit, 7))
+    if plan.intent == "direct":
+        evidence_limit = min(evidence_limit, 4)
     evidence = rank_evidence(
         plan,
         sections=sections,
         semantic_matches=semantic_matches,
-        tables=db.tables(topic["document_id"]),
-        facts=db.relevant_xbrl_facts(topic["document_id"], plan.terms),
-        limit=int(os.getenv("EVIDENCE_MAX_SOURCES", "7")),
+        tables=tables,
+        facts=facts,
+        limit=evidence_limit,
     )
     result = generate_answer_result(payload.content, evidence)
     # Only persist source items actually cited by a supported answer. An

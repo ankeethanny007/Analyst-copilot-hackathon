@@ -21,9 +21,12 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .filing-library{min-height:0;flex:1;overflow-y:auto;padding:0 2px 16px}
 .sidebar-state,.library-notice{margin:12px 6px;color:#8494ae;font-size:12px;line-height:1.55}
 .library-notice{padding:9px;border:1px solid #4b3e54;border-radius:8px;background:#201b28;color:#c4b7d4}
-.filing-group{margin:0 0 10px;padding:11px;border:1px solid transparent;border-radius:11px;background:#0b1322;transition:border-color .18s ease,background .18s ease}
+.filing-group{position:relative;margin:0 0 10px;padding:11px;border:1px solid transparent;border-radius:11px;background:#0b1322;transition:border-color .18s ease,background .18s ease}
 .filing-group.active{border-color:#40557f;background:#111c31}
-.filing-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.filing-open-button{position:absolute;inset:0;z-index:0;width:100%;border:0;border-radius:inherit;background:transparent;box-shadow:none;color:transparent}
+.filing-open-button:hover:not(:disabled){background:#172640;filter:none;transform:none}
+.filing-open-button:focus-visible{outline:3px solid #85a8ff88;outline-offset:2px;filter:none;transform:none}
+.filing-title-row{position:relative;z-index:1;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;pointer-events:none}
 .filing-title-row>div{min-width:0}
 .filing-name{display:block;overflow:hidden;color:#dce6f8;font-size:12px;font-weight:750;letter-spacing:-.01em;text-overflow:ellipsis;white-space:nowrap}
 .filing-filetype{display:block;margin-top:4px;color:#6e7f9d;font-size:9px;font-weight:800;letter-spacing:.11em}
@@ -31,13 +34,16 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .status-pill.is-ready{border-color:#326c59;background:#113429;color:#86e7b5}
 .status-pill.is-processing{border-color:#5e6290;background:#202142;color:#c7c9ff}
 .status-pill.is-failed{border-color:#814153;background:#351b27;color:#ffb4bf}
-.topic-list{display:grid;gap:3px;margin:10px 0 7px}
-.topic-button{display:flex;width:100%;align-items:center;gap:7px;overflow:hidden;padding:7px 8px;border:1px solid transparent;border-radius:7px;background:transparent;box-shadow:none;color:#afbdd3;font-size:12px;font-weight:650;text-align:left}
+.topic-list{position:relative;z-index:1;display:grid;gap:3px;margin:10px 0 7px}
+.topic-row{display:flex;align-items:stretch;gap:3px;min-width:0}
+.topic-button{display:flex;min-width:0;flex:1;align-items:center;gap:7px;overflow:hidden;padding:7px 8px;border:1px solid transparent;border-radius:7px;background:transparent;box-shadow:none;color:#afbdd3;font-size:12px;font-weight:650;text-align:left}
 .topic-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .topic-button:hover:not(:disabled),.topic-button.active{border-color:#3c527a;background:#233454;color:#fff;filter:none;transform:none}
 .topic-dot{width:6px;height:6px;flex:0 0 auto;border-radius:50%;background:#66789b}
 .topic-button.active .topic-dot{background:#9db9ff;box-shadow:0 0 0 3px #83a7ff2b}
-.new-chat-button{width:100%;padding:7px 8px;border:1px dashed #3b4d6b;border-radius:7px;background:transparent;box-shadow:none;color:#9eb9ee;font-size:11px;text-align:left}
+.delete-topic-button{width:29px;padding:0;border:1px solid transparent;border-radius:7px;background:transparent;box-shadow:none;color:#8091af;font-size:18px;font-weight:500;line-height:1}
+.delete-topic-button:hover:not(:disabled){border-color:#764255;background:#321d2a;color:#ffc0cc;filter:none;transform:none}
+.new-chat-button{position:relative;z-index:1;width:100%;padding:7px 8px;border:1px dashed #3b4d6b;border-radius:7px;background:transparent;box-shadow:none;color:#9eb9ee;font-size:11px;text-align:left}
 .new-chat-button:hover:not(:disabled){border-color:#7196da;background:#172640;filter:none;transform:none}
 .chat-workspace{display:flex;min-width:0;min-height:0;flex-direction:column;max-width:1180px;width:100%;margin:0 auto;padding:27px clamp(24px,4vw,56px) 18px}
 .chat-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex:0 0 auto;padding:0 0 19px;border-bottom:1px solid var(--line)}
