@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 import pytest
+from unittest.mock import AsyncMock
 
 pytest.importorskip("jwt")
 
@@ -92,6 +93,28 @@ def test_chat_rejects_a_question_until_its_filing_is_ready(monkeypatch) -> None:
 
     assert response.status_code == 409
     assert "still processing" in response.json()["detail"]
+    assert not repository.inserts
+
+
+def test_upload_rejects_a_filename_content_identity_mismatch_before_persistence(monkeypatch) -> None:
+    repository = FakeRepository()
+    client = _client(repository, monkeypatch)
+    message = (
+        "Incorrect file. Based on the filename \u201c3M_2023Q2_10Q.htm\u201d, expected FY2023 Q2 Form 10-Q, "
+        "but the file contains FY2023 Q1 Form 10-Q (period ended March 31, 2023) instead."
+    )
+    monkeypatch.setattr(routes, "sha256_upload", AsyncMock(return_value=("checksum", 123)))
+    monkeypatch.setattr(routes, "validate_upload_identity", AsyncMock(return_value=message))
+    try:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("3M_2023Q2_10Q.htm", b"<html></html>", "text/html")},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == message
     assert not repository.inserts
 
 

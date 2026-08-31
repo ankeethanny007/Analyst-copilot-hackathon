@@ -8,10 +8,13 @@ configured demo owner fallback; that fallback is not a production contract.
 ## Implemented endpoints
 
 - `POST /v1/documents` accepts one HTML/Inline XBRL or PDF filing. The server
-  hashes the file, reuses an owner-scoped duplicate when present, saves the
-  original in R2, creates a processing job, and returns `202 Accepted`. HTML/
-  Inline XBRL is the rich ingestion path; PDF has a page-text fallback only
-  (no OCR, table extraction, or XBRL facts).
+  hashes the file, compares any year/quarter/form encoded in its filename with
+  the filing's own metadata, reuses an owner-scoped duplicate when present,
+  saves the original in R2, creates a processing job, and returns `202
+  Accepted`. A known identity mismatch returns `422 Unprocessable Entity`
+  before R2 or database persistence. HTML/Inline XBRL is the rich ingestion
+  path; PDF has a page-text fallback only (no OCR, table extraction, or XBRL
+  facts).
 - `GET /v1/documents` lists the caller's persistent filing library, newest
   first, without storage keys, hashes, or credentials.
 - `GET /v1/documents/{document_id}/status` returns the owner-scoped document
@@ -59,6 +62,15 @@ upload (or duplicate reuse) returns a document and its selected chat topic.
     "title": "JPMORGAN_2022Q2_10Q"
   },
   "deduplicated": false
+}
+```
+
+If the filename explicitly identifies a filing but its embedded metadata
+disagrees, the server returns `422` with an actionable `detail`, for example:
+
+```json
+{
+  "detail": "Incorrect file. Based on the filename \u201c3M_2023Q2_10Q.htm\u201d, expected FY2023 Q2 Form 10-Q, but the file contains FY2023 Q1 Form 10-Q (period ended March 31, 2023) instead. Upload the expected filing or rename the file to match its contents."
 }
 ```
 

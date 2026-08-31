@@ -15,6 +15,9 @@ button:disabled{cursor:not-allowed;opacity:.5}
 .add-filing-button{display:flex;width:100%;align-items:center;justify-content:center;gap:8px;padding:12px 14px}
 .add-filing-button span{font-size:19px;font-weight:400;line-height:0}
 .upload-indicator{display:flex;align-items:center;gap:7px;margin:13px 7px 2px;color:#a9bad9;font-size:11px;line-height:1.35}
+.upload-error{margin:12px 0 0;padding:10px;border:1px solid #814153;border-radius:9px;background:#2a1722;color:#ffd0d7;font-size:10px;line-height:1.45}
+.upload-error strong{display:block;margin-bottom:3px;color:#ff9cad;font-size:10px;letter-spacing:.03em;text-transform:uppercase}
+.upload-error p{margin:0}
 .upload-spinner,.loading-orb{display:inline-block;width:13px;height:13px;flex:0 0 auto;border:2px solid #a8c0ff55;border-top-color:#9ec0ff;border-radius:50%;animation:spin .8s linear infinite}
 .library-heading{display:flex;align-items:center;justify-content:space-between;margin:28px 8px 10px;color:#93a3be;font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}
 .filing-count{display:grid;min-width:19px;height:19px;place-items:center;border:1px solid #344566;border-radius:50%;color:#b6c5dd;font-size:10px;letter-spacing:0}

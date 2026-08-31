@@ -364,6 +364,7 @@ export default function Home() {
   const [documentsLoading, setDocumentsLoading] = useState(true);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [creatingDocumentId, setCreatingDocumentId] = useState<string | null>(null);
   const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
   const [retryingDocumentId, setRetryingDocumentId] = useState<string | null>(null);
@@ -620,6 +621,7 @@ export default function Home() {
 
   async function uploadFiling(file: File) {
     setUploadingFileName(file.name);
+    setUploadError(null);
     setError(null);
     const data = new FormData();
     data.append("file", file);
@@ -635,7 +637,7 @@ export default function Home() {
       void loadTopics();
       void loadDocuments();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to upload filing.");
+      setUploadError(reason instanceof Error ? reason.message : "Unable to upload filing.");
     } finally {
       setUploadingFileName(null);
     }
@@ -702,6 +704,7 @@ export default function Home() {
           }}
         />
         {uploadingFileName && <div className="upload-indicator" role="status"><span className="upload-spinner" aria-hidden="true" />Sending {uploadingFileName}</div>}
+        {uploadError && <div className="upload-error" role="alert"><strong>Upload blocked</strong><p>{uploadError}</p></div>}
 
         <div className="library-heading"><span>My filings</span><span className="filing-count">{filings.length}</span></div>
         <div className="filing-library">
