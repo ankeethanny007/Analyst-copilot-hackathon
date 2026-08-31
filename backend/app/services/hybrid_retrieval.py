@@ -343,7 +343,8 @@ def rank_evidence(
             continue
         # Do not let a long filing's repeated fact/table rows crowd out the
         # narrative needed to explain a driver or a calculation.
-        if source_counts.get(item.source_type, 0) >= {"table": 3, "section": 3, "xbrl": 2}.get(item.source_type, 2):
+        source_caps = {"table": 5 if plan.needs_calculation else 3, "section": 3, "xbrl": 2}
+        if source_counts.get(item.source_type, 0) >= source_caps.get(item.source_type, 2):
             continue
         seen.add(key)
         source_counts[item.source_type] = source_counts.get(item.source_type, 0) + 1

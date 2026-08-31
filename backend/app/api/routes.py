@@ -323,6 +323,11 @@ def ask_question(topic_id: UUID, payload: AskQuestion, owner_id: str = Depends(c
     evidence_limit = max(3, min(configured_limit, 7))
     if plan.intent == "direct":
         evidence_limit = min(evidence_limit, 4)
+    elif plan.needs_calculation:
+        # Ratios such as operating cash flow/current liabilities and free-cash
+        # flow conversion need inputs from two statements. Preserve room for
+        # both statement tables plus any required comparative-year source.
+        evidence_limit = max(evidence_limit, 6)
     evidence = rank_evidence(
         plan,
         sections=sections,
