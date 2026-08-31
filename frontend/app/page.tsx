@@ -762,6 +762,9 @@ export default function Home() {
             );
           })}
         </div>
+        <footer className="sidebar-footer">
+          Submitted by Ankeet Hanny for AI Hackathon at VRIZE
+        </footer>
       </aside>
 
       <section className="chat-workspace" aria-label="Filing chat">
