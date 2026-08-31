@@ -1,5 +1,5 @@
 import backend.app.services.answering as answering
-from backend.app.services.answering import RetrievedEvidence, _response_text, generate_answer
+from backend.app.services.answering import RetrievedEvidence, _direct_growth_answer, _response_text, generate_answer
 from urllib.error import HTTPError
 
 
@@ -18,6 +18,140 @@ def test_growth_calculation_uses_a_single_cited_annual_table() -> None:
     assert "$31,657 million" in answer
     assert "in 2017 to $32,765 million in 2018" in answer
     assert answer.endswith("[S1]")
+
+
+def test_growth_calculation_maps_requested_years_in_a_five_year_table() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "section",
+            18,
+            "Selected Consolidated Financial Data",
+            "Year Ended December 31,\n2013\n2014\n2015\n2016\n2017\n(in millions)\n"
+            "Net sales\n$74,452\n$88,988\n$107,006\n$135,987\n$177,866\n"
+            "Operating income\n$745\n$178\n$2,233\n$4,186\n$4,106",
+            1.0,
+        )
+    ]
+
+    answer, status = generate_answer(
+        "What is Amazon's year-over-year change in revenue from FY2016 to FY2017?",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "30.8%" in answer
+    assert "from $135,987 million in 2016 to $177,866 million in 2017" in answer
+
+
+def test_formula_input_change_does_not_trigger_unrelated_growth_shortcut() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "section",
+            18,
+            "Selected Consolidated Financial Data",
+            "2016 2017 Net sales $135,987 $177,866",
+            1.0,
+        )
+    ]
+
+    answer = _direct_growth_answer(
+        "What is FY2017 DPO? DPO is 365 * average accounts payable / "
+        "(FY2017 COGS + change in inventory between FY2016 and FY2017).",
+        evidence,
+    )
+
+    assert answer is None
+
+
+def test_growth_calculation_prefers_the_requested_formal_statement() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "summary",
+            18,
+            "Selected Consolidated Financial Data",
+            "2016 2017 Net sales $135,987 $177,866",
+            99.0,
+            source_type="table",
+        ),
+        RetrievedEvidence(
+            None,
+            "income",
+            38,
+            "Consolidated Statements of Operations",
+            "2016 2017 Net sales $135,987 $177,866",
+            1.0,
+            source_type="table",
+        ),
+    ]
+
+    answer, status = generate_answer(
+        "What was the change in revenue from FY2016 to FY2017 using the income statement?",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "30.8%" in answer
+    assert answer.endswith("[S2]")
+
+
+def test_explicit_zero_fallback_uses_the_requested_formal_statement() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "income",
+            131,
+            "Consolidated Statements of Operations",
+            "2022 | 2021 | 2020\nRevenue | 12,617 | 11,141 | 9,660\nGeneral and administrative expenses | 207 | 166 | 165",
+            1.0,
+            source_type="table",
+        )
+    ]
+
+    answer, status = generate_answer(
+        "What restructuring costs are directly outlined in the income statement for FY2022? "
+        "If restructuring costs are not explicitly outlined then state 0.",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "$0" in answer
+    assert answer.endswith("[S1]")
+
+
+def test_inventory_turnover_uses_same_year_ending_inventory() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "balance",
+            130,
+            "Consolidated Balance Sheets",
+            "2022 | 2021\nInventory | 1,055 | 604",
+            1.0,
+            source_type="table",
+        ),
+        RetrievedEvidence(
+            None,
+            "income",
+            131,
+            "Consolidated Statements of Operations",
+            "2022 | 2021 | 2020\nTotal cost of sales | ( 10,069 ) | ( 8,430 ) | ( 6,967 )",
+            1.0,
+            source_type="table",
+        ),
+    ]
+
+    answer, status = generate_answer(
+        "How many times has AES Corporation converted inventory? Calculate inventory turnover ratio for FY2022.",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "AES has converted inventory 9.5 times in FY2022." in answer
+    assert "10,069 / ending inventory 1,055" in answer
+    assert "[S1][S2]" in answer
 
 
 def test_direct_metric_converts_a_source_million_value_to_requested_billions() -> None:
@@ -48,6 +182,30 @@ def test_net_ppe_does_not_confuse_the_gross_balance_sheet_line_for_the_net_line(
     assert status == "supported"
     assert "$8.74 billion" in answer
     assert "$24.87 billion" not in answer
+
+
+def test_direct_metric_maps_a_requested_year_from_vertical_table_headers() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "table",
+            38,
+            "Consolidated Statements of Operations",
+            "Year Ended December 31,\n2017\n2018\n2019\n"
+            "Net product sales\n$118,573\n$141,915\n$160,408\n"
+            "Operating income\n$4,106\n$12,421\n$14,541\n"
+            "Net income\n$3,033\n$10,073\n$11,588",
+            1.0,
+        )
+    ]
+
+    answer, status = generate_answer(
+        "What is Amazon's FY2019 net income attributable to shareholders in USD millions?",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "Net income was $11,588 million" in answer
 
 
 def test_response_text_reads_raw_responses_api_message_content() -> None:

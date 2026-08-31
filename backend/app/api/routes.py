@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from app.services.answering import embed_question, generate_answer_result
 from app.services.auth import current_owner_id
 from app.services.hybrid_retrieval import rank_evidence
-from app.services.ingestion import sha256_upload
+from app.services.ingestion import sha256_upload, validate_upload_identity
 from app.services.processing import process_document
 from app.services.question_planning import plan_question
 from app.services.r2 import storage_key, upload
@@ -92,6 +92,9 @@ async def upload_document(
     """Persist the immutable original once, then start document processing."""
     media_type = _filing_media_type(file)
     checksum, size_bytes = await sha256_upload(file)
+    identity_error = await validate_upload_identity(file, media_type)
+    if identity_error:
+        raise HTTPException(422, identity_error)
     existing = db.select("documents", {"owner_id": f"eq.{owner_id}", "sha256": f"eq.{checksum}", "select": "id,original_filename,status"})
     if existing:
         topic_rows = db.select(

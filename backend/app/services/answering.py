@@ -89,6 +89,9 @@ def generate_answer_result(question: str, evidence: list[RetrievedEvidence]) -> 
     growth = _direct_growth_answer(question, evidence)
     if growth:
         return _result(growth, "supported", evidence)
+    inventory_turnover = _inventory_turnover_answer(question, evidence)
+    if inventory_turnover:
+        return _result(inventory_turnover, "supported", evidence)
     # A question asking what caused or drove a result must explain the
     # supported management discussion, not seize the first nearby numeric
     # table value. Direct extraction remains a fast, exact path only for a
@@ -108,9 +111,10 @@ def generate_answer_result(question: str, evidence: list[RetrievedEvidence]) -> 
         "Match the FinanceBench-style answer format: for information extraction, give the exact requested value or fact in the first sentence and cite it as [S#]. Cite every factual sentence with one or more [S#] labels. "
         "For numerical or logical reasoning (including growth, margins, or changes), give a one-sentence conclusion followed by a `Calculation:` line that states only the inputs and arithmetic supported by sources. "
         "For drivers of a change, identify only the causes explicitly discussed in the supplied management discussion or notes, and cite each source. "
+        "For a list or filing-purpose question, return every responsive item disclosed in the supplied excerpt. If a requested period has no disclosed item in those sources, state that no item is listed for that period instead of discarding the supported items. "
         "For an analytical judgment framed as `based on` filing data (for example, capital intensity), make a clearly labelled inference from disclosed values and a simple stated calculation; do not present that inference as a quoted management conclusion. "
         "Lead with the metric or conclusion label (never a bare number). Preserve the requested unit: label a turnover or other multiple with `x`, and label percentages with `%`. Keep the response under 180 words and use at most three bullets after the conclusion or calculation. "
-        "Reply exactly `Not found in this filing.` if the supplied excerpts do not contain every requested fact, period, unit, and calculation input needed for the answer; for a driver question, abstain unless they contain an explicit management explanation. "
+        "Except for the list/filing-purpose rule above, reply exactly `Not found in this filing.` if the supplied excerpts do not contain every requested fact, period, unit, and calculation input needed for the answer; for a driver question, abstain unless they contain an explicit management explanation. "
         "If an excerpt contains an explicit requested metric or driver under a neutral heading such as `Filing section`, it is still valid filing evidence: answer from it rather than abstaining. "
         "Do not restate the question, do not quote a source label that was not supplied, and do not claim a requested period or unit unless it appears in a source."
     )
@@ -217,6 +221,72 @@ def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[s
     return result.content, result.status
 
 
+def _inventory_turnover_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
+    """Calculate the FinanceBench inventory-turnover convention.
+
+    The benchmark defines the annual ratio as total cost of sales divided by
+    the same-year ending inventory unless the question supplies another
+    formula. Keep this deterministic path restricted to the explicit ratio
+    label and two structured statement rows.
+    """
+    if "inventory turnover" not in question.lower():
+        return None
+    years = list(dict.fromkeys(re.findall(r"(?:FY\s*)?((?:19|20)\d{2})\b", question, re.I)))
+    if not years:
+        return None
+    year = years[-1]
+
+    def row_value(item: RetrievedEvidence, label: re.Pattern[str]) -> Decimal | None:
+        lines = [line.strip() for line in item.excerpt.splitlines() if line.strip()]
+        header_years: list[str] = []
+        for line in lines[:6]:
+            found = re.findall(r"\b(?:19|20)\d{2}\b", line)
+            if found:
+                header_years.extend(found)
+        header_years = list(dict.fromkeys(header_years))
+        if year not in header_years:
+            return None
+        for line in lines:
+            if not label.search(line):
+                continue
+            values = [
+                Decimal(value.replace(",", ""))
+                for value in re.findall(r"(?<![\w,])([\d][\d,]*(?:\.\d+)?)(?![\dA-Za-z])", line)
+                if not re.fullmatch(r"(?:19|20)\d{2}", value.replace(",", ""))
+            ]
+            if len(values) >= len(header_years):
+                return abs(values[header_years.index(year)])
+        return None
+
+    inventory: tuple[int, Decimal] | None = None
+    cost_of_sales: tuple[int, Decimal] | None = None
+    for index, item in enumerate(evidence, start=1):
+        if item.source_type != "table":
+            continue
+        if inventory is None:
+            value = row_value(item, re.compile(r"^inventor(?:y|ies)(?:,?\s+net)?\s*\|", re.I))
+            if value is not None:
+                inventory = (index, value)
+        if cost_of_sales is None:
+            value = row_value(item, re.compile(r"^total\s+cost\s+of\s+sales\s*\|", re.I))
+            if value is not None:
+                cost_of_sales = (index, value)
+    if inventory is None or cost_of_sales is None or inventory[1] == 0:
+        return None
+    ratio = cost_of_sales[1] / inventory[1]
+    citations = "".join(f"[S{index}]" for index in dict.fromkeys((inventory[0], cost_of_sales[0])))
+    company_match = re.search(r"\b([A-Z][A-Za-z0-9&.-]*)\s+Corporation\b", question)
+    conclusion = (
+        f"{company_match.group(1)} has converted inventory {ratio:.1f} times in FY{year}."
+        if company_match
+        else f"FY{year} inventory turnover: {ratio:.1f}x."
+    )
+    return (
+        f"{conclusion} {citations}\n\n"
+        f"Calculation: total cost of sales {cost_of_sales[1]:,.0f} / ending inventory {inventory[1]:,.0f} = {ratio:.1f}x."
+    )
+
+
 def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
     """Return an exact reported metric when the question and source align.
 
@@ -299,6 +369,25 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
             header = re.findall(r"\b(?:19|20)\d{2}\b", lines[offset])
             if len(header) >= 2:
                 return header
+        # Extracted HTML tables can render each header cell on its own line,
+        # and a requested metric may be dozens of rows below that header.
+        # Find the last annual-period heading before the metric and collect
+        # its consecutive year cells rather than defaulting to column one.
+        candidates: list[list[str]] = []
+        for offset, line in enumerate(lines[:line_index]):
+            if not re.search(r"\b(?:years? ended|as of|december 31)\b", line, re.I):
+                continue
+            years: list[str] = []
+            for header_line in lines[offset : min(line_index, offset + 10)]:
+                found = re.findall(r"\b(?:19|20)\d{2}\b", header_line)
+                if found:
+                    years.extend(found)
+                elif years:
+                    break
+            if len(years) >= 2:
+                candidates.append(list(dict.fromkeys(years)))
+        if candidates:
+            return candidates[-1]
         return []
 
     def contains_requested_metric(item: RetrievedEvidence) -> bool:
@@ -315,13 +404,24 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
     # number. Inline XBRL facts are also eligible when their mapped section
     # heading is the requested formal statement.
     indexed_evidence = list(enumerate(evidence, start=1))
-    statement_sources = [
+    formal_statement_sources = [
         pair
         for pair in indexed_evidence
         if pair[1].source_type in {"table", "xbrl"}
         and is_requested_statement_heading(pair[1].heading, plan.statement_hint)
-        and contains_requested_metric(pair[1])
     ]
+    statement_sources = [pair for pair in formal_statement_sources if contains_requested_metric(pair[1])]
+    # Some benchmarks explicitly define absence from an enumerated financial
+    # statement as zero.  This is safe only when the user requests that exact
+    # fallback and a formal requested statement was retrieved; otherwise an
+    # unmatched metric must continue through the evidence-first answer path.
+    explicit_zero_if_absent = bool(
+        re.search(r"\bif\b[^.?!]{0,100}\bnot\b[^.?!]{0,60}\b(?:state|report|answer)\s+(?:it\s+(?:as|is)\s+)?0\b", question, re.I)
+    )
+    if explicit_zero_if_absent and formal_statement_sources and not statement_sources:
+        source_index = formal_statement_sources[0][0]
+        label = candidates[0] if candidates else "requested costs"
+        return f"Answer: {label[0].upper() + label[1:]} explicitly presented in the requested statement were $0. [S{source_index}]"
     eligible_evidence = statement_sources or indexed_evidence
     ordered_evidence = sorted(
         eligible_evidence,
@@ -338,9 +438,11 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
                 values = amounts(line[match.end() :])
                 if not values:
                     # Some compact table renderings lose newlines. Fall back
-                    # to the rest of the evidence only after finding the true
-                    # metric label, not an arbitrary question n-gram.
-                    values = amounts(item.excerpt[match.end() :])
+                    # to rows after the matched metric only. ``match.end()``
+                    # is relative to this line, not the full excerpt; applying
+                    # it to ``item.excerpt`` starts near the document header
+                    # and can silently return an unrelated earlier value.
+                    values = amounts(" ".join(lines[line_index + 1 :]))
                 if not values:
                     continue
                 value = values[0]
@@ -361,19 +463,76 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
 
 def _direct_growth_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
     """Calculate a year-over-year change only from a single cited table."""
-    if not re.search(r"\b(growth|increase|decrease|decline|change)\b", question, re.I):
+    from .question_planning import is_requested_statement_heading, plan_question
+
+    plan = plan_question(question)
+    lowered_question = " ".join(question.lower().split())
+    metric_aliases = {
+        "gross revenue": ("net sales", "revenue", "revenues"),
+        "total revenue": ("net sales", "revenue", "revenues"),
+        "net sales": ("net sales",),
+        "revenue": ("net sales", "revenue", "revenues"),
+        "gross profit": ("gross profit",),
+    }
+    requested_metric: str | None = None
+    for metric in metric_aliases:
+        escaped = re.escape(metric)
+        if re.search(rf"\b(?:growth|increase|decrease|decline|change)\s+(?:in|of)\s+(?:\w+\s+){{0,2}}{escaped}\b", lowered_question):
+            requested_metric = metric
+            break
+        if re.search(rf"\b{escaped}\s+(?:growth|increase|decrease|decline|change)\b", lowered_question):
+            requested_metric = metric
+            break
+    # A formula can mention a change in one of its inputs (for example,
+    # inventory inside a DPO calculation).  That must not route the whole
+    # question through the revenue-growth shortcut.
+    if requested_metric is None:
         return None
-    years = sorted(re.findall(r"(?:FY\s*)?(20\d{2})\b", question, re.I), reverse=True)
+    years = sorted(set(re.findall(r"(?:FY\s*)?(20\d{2})\b", question, re.I)), reverse=True)
     if len(years) < 2:
         return None
-    for index, item in enumerate(evidence, start=1):
+    allowed_labels = metric_aliases[requested_metric]
+    indexed_evidence = list(enumerate(evidence, start=1))
+    statement_sources = [
+        pair
+        for pair in indexed_evidence
+        if pair[1].source_type in {"table", "xbrl"}
+        and is_requested_statement_heading(pair[1].heading, plan.statement_hint)
+    ]
+    ordered_evidence = sorted(
+        statement_sources or indexed_evidence,
+        key=lambda pair: (pair[1].score, pair[1].source_type == "table"),
+        reverse=True,
+    )
+    for index, item in ordered_evidence:
         text = " ".join(item.excerpt.split())
         if not all(year in text for year in years):
             continue
-        match = re.search(r"\b(net sales|revenues?|gross profit)\b\s*(?:\([^)]*\))?(?:\s*\|\s*\$?)*\s*\(?([\d][\d,]*)\)?(?:\s*\|\s*\$?)*\s*\(?([\d][\d,]*)\)?", text, re.I)
+        labels = "|".join(re.escape(label) for label in allowed_labels)
+        match = re.search(rf"\b({labels})\b", text, re.I)
         if not match:
             continue
-        latest, prior = (int(value.replace(",", "")) for value in match.group(2, 3))
+        values = [
+            int(value.replace(",", ""))
+            for value in re.findall(r"(?<![\w,])\$?\s*([\d][\d,]*)(?![\dA-Za-z])", text[match.end() :])
+            if not re.fullmatch(r"(?:19|20)\d{2}", value.replace(",", ""))
+        ]
+        if len(values) < 2:
+            continue
+        # SEC tables often contain three to five annual columns.  Map the
+        # requested periods to the nearest header immediately before the
+        # metric instead of assuming the first two cells are the requested
+        # years.  This is critical for selected-financial-data tables ordered
+        # oldest-to-newest.
+        header_years = re.findall(r"\b(?:19|20)\d{2}\b", text[: match.start()])
+        header_years = header_years[-min(len(header_years), len(values)) :]
+        year_values = dict(zip(header_years, values[: len(header_years)]))
+        if years[0] in year_values and years[1] in year_values:
+            latest, prior = year_values[years[0]], year_values[years[1]]
+        elif len(values) == 2:
+            latest, prior = values
+        else:
+            continue
         if prior == 0:
             continue
         growth = (latest - prior) / prior * 100

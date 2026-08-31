@@ -103,6 +103,203 @@ def test_cash_flow_ratio_and_conversion_questions_plan_for_statement_inputs() ->
     assert "net income" in conversion.phrases
 
 
+def test_acquisition_question_prioritizes_the_acquisition_note_over_generic_year_matches() -> None:
+    plan = plan_question("What major acquisitions were completed in FY2023, FY2022 and FY2021?")
+    sections = [
+        {
+            "id": "generic-years",
+            "page_number": 27,
+            "heading": "Shareholder Return Performance",
+            "content": "Shareholder returns for 2023, 2022 and 2021 are presented below.",
+            "source_anchor": "page-27",
+        },
+        {
+            "id": "acquisitions",
+            "page_number": 64,
+            "heading": "Note 5 - Acquisitions and Divestitures",
+            "content": (
+                "Year ended June 30, 2023 Acquisitions. The Company completed the acquisition "
+                "of a flexible packaging manufacturer and a medical device packaging site."
+            ),
+            "source_anchor": "page-64",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert len(evidence) == 1
+    assert evidence[0].page_number == 64
+    assert "acquisitions and divestitures" in plan.phrases
+    assert plan.intent == "list"
+
+
+def test_dpo_question_retrieves_both_balance_sheet_and_income_statement_inputs() -> None:
+    plan = plan_question(
+        "What is FY2017 days payable outstanding (DPO)? Calculate using average accounts payable, "
+        "FY2017 COGS, and the change in inventory between FY2016 and FY2017 using the balance sheet "
+        "and the P&L statement."
+    )
+    sections = [
+        {"id": "balance", "page_number": 40, "heading": "Consolidated Balance Sheets"},
+        {"id": "income", "page_number": 38, "heading": "Consolidated Statements of Operations"},
+    ]
+    tables = [
+        {
+            "id": "balance-table",
+            "section_id": "balance",
+            "page_number": 40,
+            "title": "Consolidated Balance Sheets",
+            "content": {"rows": [["2016", "2017"], ["Inventories", "11,461", "16,047"], ["Accounts payable", "25,309", "34,616"]]},
+            "source_anchor": "page-40-table-1",
+        },
+        {
+            "id": "income-table",
+            "section_id": "income",
+            "page_number": 38,
+            "title": "Consolidated Statements of Operations",
+            "content": {"rows": [["2016", "2017"], ["Cost of sales", "88,265", "111,934"]]},
+            "source_anchor": "page-38-table-1",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[], limit=6)
+
+    assert plan.intent == "calculation"
+    assert plan.statement_hint is None
+    assert "accounts payable" in plan.phrases
+    assert "cost of sales" in plan.phrases
+    assert {item.page_number for item in evidence if item.source_type == "table"} == {38, 40}
+
+
+def test_filing_agenda_question_uses_narrative_answering_path() -> None:
+    plan = plan_question("What was the key agenda of the 8-K filing?")
+
+    assert plan.intent == "list"
+    assert "supplemental indenture" in plan.phrases
+    assert "substitute issuer" in plan.phrases
+
+
+def test_list_question_retains_all_items_from_a_long_narrative_note() -> None:
+    plan = plan_question("What major acquisitions were completed in FY2023?")
+    content = (
+        "Note 5 - Acquisitions and Divestitures. First acquisition: Czech packaging plant. "
+        + ("Transaction detail and purchase accounting. " * 45)
+        + "Second acquisition: Shanghai medical packaging site. "
+        + ("Additional transaction detail. " * 25)
+        + "Third acquisition: New Zealand protein packaging machinery manufacturer."
+    )
+    sections = [
+        {
+            "id": "acquisition-note",
+            "page_number": 64,
+            "heading": "Acquisitions",
+            "content": content,
+            "source_anchor": "page-64",
+        }
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert len(evidence[0].excerpt) > 1500
+    assert "Third acquisition" in evidence[0].excerpt
+
+
+def test_filing_purpose_excerpt_retains_operating_purpose_after_long_definitions() -> None:
+    plan = plan_question("What was the key agenda of this 8-K filing?")
+    content = (
+        "Item 8.01 Other Events. The Former Issuer and Substitute Issuer entered into "
+        "supplemental indentures with the trustee. "
+        + ("Defined notes, parties, dates and governing indenture details. " * 65)
+        + "The supplemental indentures relate to the substitution of the Substitute Issuer "
+        "for the Former Issuer and assumption of the Former Issuer's covenants."
+    )
+    sections = [
+        {
+            "id": "other-events",
+            "page_number": 1,
+            "heading": "Item 8.01 Other Events",
+            "content": content,
+            "source_anchor": "page-1",
+        }
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert "relate to the substitution" in evidence[0].excerpt
+    assert "assumption of the Former Issuer's covenants" in evidence[0].excerpt
+
+
+def test_excluding_m_and_a_retrieves_the_organic_segment_sales_bridge() -> None:
+    plan = plan_question("Excluding the impact of M&A, which segment dragged down growth in 2022?")
+    sections = [
+        {
+            "id": "generic-growth",
+            "page_number": 20,
+            "heading": "Results",
+            "content": "Total company growth declined in 2022.",
+        },
+        {
+            "id": "segment-bridge",
+            "page_number": 25,
+            "heading": "Worldwide Sales Change By Business Segment",
+            "content": (
+                "Organic sales Acquisitions Divestitures Translation Total sales change "
+                "Safety and Industrial 1.0% 0% 0% (4.2)% (3.2)% "
+                "Consumer (0.9)% 0% (0.4)% (2.6)% (3.9)%"
+            ),
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert "organic sales" in plan.phrases
+    assert evidence[0].page_number == 25
+
+
+def test_inventory_turnover_retrieves_cost_of_sales_and_inventory() -> None:
+    plan = plan_question("How many times was inventory turned over in FY2022? Calculate inventory turnover ratio.")
+    sections = [
+        {"id": "balance", "page_number": 130, "heading": "Consolidated Balance Sheets"},
+        {"id": "income", "page_number": 131, "heading": "Consolidated Statements of Operations"},
+    ]
+    tables = [
+        {
+            "id": "balance-table",
+            "section_id": "balance",
+            "page_number": 130,
+            "title": "Consolidated Balance Sheets",
+            "content": {"rows": [["2022", "2021"], ["Inventory", "1,055", "604"]]},
+        },
+        {
+            "id": "income-table",
+            "section_id": "income",
+            "page_number": 131,
+            "title": "Consolidated Statements of Operations",
+            "content": {"rows": [["2022", "2021"], ["Total cost of sales", "10,069", "8,430"]]},
+        },
+    ]
+    for index in range(4):
+        tables.append(
+            {
+                "id": f"regional-{index}",
+                "section_id": "income",
+                "page_number": 100 + index,
+                "title": "Regional operating-margin driver",
+                "content": {
+                    "rows": [["2022"], [f"Region {index} increase driven by lower cost of sales", "10"]]
+                },
+            }
+        )
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[], limit=6)
+
+    assert "total cost of sales" in plan.phrases
+    retrieved_pages = {item.page_number for item in evidence if item.source_type == "table"}
+    assert {130, 131}.issubset(retrieved_pages)
+    income_source = next(item for item in evidence if item.source_type == "table" and item.page_number == 131)
+    assert "Total cost of sales" in income_source.excerpt
+
+
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     plan = plan_question(
         "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "

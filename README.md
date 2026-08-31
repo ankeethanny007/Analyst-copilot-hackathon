@@ -81,6 +81,8 @@ Request/response schemas and examples are in [docs/api-contracts.md](docs/api-co
 ## 3. Feature and UI highlights
 
 - Upload a filing once and reuse it across focused chat topics.
+- Catch known filename/content filing mismatches before upload and show an
+  actionable warning in the filing panel.
 - A filing card opens its latest chat; individual topics can be renamed or deleted without deleting the processed filing.
 - Document-scoped context: switching a topic switches the active filing and its retrieval boundary.
 - Clear upload and multi-stage processing feedback for reading, section/table extraction, Inline XBRL extraction, and search indexing.

@@ -55,3 +55,30 @@ def test_display_labels_repair_inline_xbrl_word_splits_without_editing_evidence_
     assert _repair_display_label("Consolidated Balance Shee t") == "Consolidated Balance Sheet"
     assert _repair_display_label("Consolidated Statement of Cash Flow s — (Millions)") == "Consolidated Statement of Cash Flows — (Millions)"
     assert _repair_display_label("RESULTS OF OPERATI ONS") == "RESULTS OF OPERATIONS"
+
+
+def test_sec_multi_document_download_selects_the_submitted_filing_body(tmp_path: Path) -> None:
+    filing = tmp_path / "multi-document.htm"
+    filing.write_text(
+        """
+        <html><body><h1>SEC filing index</h1><p>Document 1 - primary.htm</p></body></html>
+        <!-- next document -->
+        <html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL">
+          <body>
+            <ix:header><ix:resources></ix:resources></ix:header>
+            <h1>FORM <ix:nonNumeric name="dei:DocumentType">8-K</ix:nonNumeric></h1>
+            <h2>Item 8.01 Other Events</h2>
+            <p>The substitute issuer assumed the covenants under the supplemental indenture.</p>
+          </body>
+        </html>
+        <html><body><h1>Exhibit 4.6</h1><p>Unrelated exhibit text.</p></body></html>
+        """,
+        encoding="utf-8",
+    )
+
+    extract = parse_html_xbrl(filing)
+
+    assert len(extract.pages) == 1
+    assert "substitute issuer assumed the covenants" in extract.pages[0].content.lower()
+    assert "SEC filing index" not in extract.pages[0].content
+    assert "Unrelated exhibit" not in extract.pages[0].content

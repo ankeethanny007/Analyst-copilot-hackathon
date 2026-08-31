@@ -82,10 +82,13 @@ def _table_excerpt(content: str, plan: QuestionPlan, limit: int = 2100) -> str:
 
     def focused_row(candidates: Iterable[str]) -> int | None:
         normalised_candidates = [searchable(value) for value in candidates if searchable(value)]
-        for index, row in enumerate(rows):
-            haystack = searchable(row)
-            if any(candidate in haystack for candidate in normalised_candidates):
-                return index
+        # Candidates arrive in specificity order. Search every row for the
+        # most specific label before accepting an earlier generic header such
+        # as ``Cost of Sales`` ahead of ``Total cost of sales``.
+        for candidate in normalised_candidates:
+            for index, row in enumerate(rows):
+                if candidate in searchable(row):
+                    return index
         return None
 
     # An explicit answer phrase (including a filing-label alias such as
@@ -187,7 +190,10 @@ def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], sem
                 section_id,
                 int(section.get("page_number") or 0),
                 heading,
-                _excerpt(content, plan),
+                # Filing-purpose and list answers often span one long SEC
+                # narrative block.  Keep enough context to include the
+                # operative purpose after the transaction/party definitions.
+                _excerpt(content, plan, limit=5000 if plan.intent == "list" else 1500),
                 score,
                 source_type="section",
                 source_anchor=section.get("source_anchor"),
@@ -232,7 +238,8 @@ def table_evidence(
             heading = associated_heading
         score = _term_score(rendered, heading, plan)
         for phrase in plan.phrases:
-            if len(phrase.split()) >= 2 and re.search(rf"(?:^|\n)\s*{re.escape(phrase)}\b", rendered, re.I):
+            exact_single_line_item = phrase in plan.answer_phrases and phrase in {"inventory"}
+            if (len(phrase.split()) >= 2 or exact_single_line_item) and re.search(rf"(?:^|\n)\s*{re.escape(phrase)}\b", rendered, re.I):
                 # A financial-statement row that exactly matches the metric
                 # is stronger evidence than a discussion/table that merely
                 # mentions the same words somewhere else.
