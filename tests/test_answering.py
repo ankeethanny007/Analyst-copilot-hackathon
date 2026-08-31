@@ -1,5 +1,6 @@
 import backend.app.services.answering as answering
 from backend.app.services.answering import RetrievedEvidence, _response_text, generate_answer
+from urllib.error import HTTPError
 
 
 def test_exact_metric_evidence_bypasses_unnecessary_model_abstention() -> None:
@@ -87,3 +88,62 @@ def test_driver_question_bypasses_metric_shortcut_and_uses_cited_evidence(monkey
     assert status == "supported"
     assert "Higher raw-material costs" in answer
     assert "22.4" not in answer
+
+
+def test_answer_generation_retries_a_transient_provider_failure(monkeypatch) -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "section",
+            42,
+            "Management discussion and analysis",
+            "Operating income declined because higher raw-material costs reduced margin.",
+            1.0,
+        )
+    ]
+    attempts = 0
+
+    def post(_path, _body):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary provider failure")
+        return {"output": [{"type": "message", "content": [{"type": "output_text", "text": "Higher raw-material costs reduced margin. [S1]"}]}]}
+
+    monkeypatch.setattr(answering, "_openai_post", post)
+    monkeypatch.setattr(answering.time, "sleep", lambda _seconds: None)
+    monkeypatch.setenv("ANSWER_MAX_RETRIES", "1")
+
+    answer, status = generate_answer("What drove the decline in operating income?", evidence)
+
+    assert status == "supported"
+    assert attempts == 2
+    assert answer.endswith("[S1]")
+
+
+def test_answer_generation_does_not_retry_permanent_provider_errors(monkeypatch) -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "section",
+            42,
+            "Management discussion and analysis",
+            "Operating income declined because higher raw-material costs reduced margin.",
+            1.0,
+        )
+    ]
+    attempts = 0
+
+    def post(_path, _body):
+        nonlocal attempts
+        attempts += 1
+        raise HTTPError("https://api.openai.com/v1/responses", 401, "Unauthorized", hdrs=None, fp=None)
+
+    monkeypatch.setattr(answering, "_openai_post", post)
+    monkeypatch.setenv("ANSWER_MAX_RETRIES", "2")
+
+    answer, status = generate_answer("What drove the decline in operating income?", evidence)
+
+    assert status == "failed"
+    assert attempts == 1
+    assert "could not be completed" in answer

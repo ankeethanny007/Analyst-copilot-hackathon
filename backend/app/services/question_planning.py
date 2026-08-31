@@ -31,6 +31,27 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "gross revenue": ("revenue", "revenues", "net sales", "sales"),
     "capex": ("capital expenditures", "capital expenditure", "purchases of property", "property plant and equipment"),
     "capital expenditure": ("capital expenditures", "purchases of property", "property plant and equipment"),
+    # Capital intensity is an analytical judgment, so retrieve both the
+    # invested-asset/capex inputs and activity measures needed to explain the
+    # inference rather than looking for a filing to use that exact phrase.
+    "capital intensive": (
+        "capital expenditures",
+        "purchases of property",
+        "property plant and equipment",
+        "depreciation and amortization",
+        "net sales",
+        "total assets",
+        "cash flows from operating activities",
+    ),
+    "capital-intensive": (
+        "capital expenditures",
+        "purchases of property",
+        "property plant and equipment",
+        "depreciation and amortization",
+        "net sales",
+        "total assets",
+        "cash flows from operating activities",
+    ),
     "pp&e": ("property plant and equipment", "property, plant and equipment", "fixed assets"),
     "ppe": ("property plant and equipment", "property, plant and equipment", "fixed assets"),
     # Keep the `net` qualifier in every expansion.  A generic PP&E expansion
@@ -119,16 +140,75 @@ def _statement_hint(question: str) -> str | None:
         return "cash flow"
     if any(value in lowered for value in ("balance sheet", "financial position", "statement of financial position")):
         return "balance sheet"
-    if any(value in lowered for value in ("income statement", "statement of operations", "statement of income", "profit and loss", "p&l")):
+    if any(
+        value in lowered
+        for value in (
+            "income statement",
+            "statement of operations",
+            "statement of income",
+            "statement of earnings",
+            "earnings statement",
+            "profit and loss",
+            "p&l",
+        )
+    ):
         return "income statement"
     if any(value in lowered for value in ("management discussion", "mda", "md&a")):
         return "management discussion"
     return None
 
 
+def is_requested_statement_heading(
+    heading: str,
+    statement_hint: str | None,
+    associated_heading: str | None = None,
+) -> bool:
+    """Return whether a source heading names the requested formal statement.
+
+    An MD&A or non-GAAP table can mention the words ``cash flow`` or
+    ``balance sheet`` while still being a summary *about* that statement.
+    This deliberately inspects source labels, rather than every word in the
+    source body, so a question that explicitly asks for a financial statement
+    can prefer the filed statement itself.  A parser can give a table a
+    generic period label (for example, ``Fiscal Years Ended``), while its
+    linked document section retains the formal-statement title; callers may
+    supply that associated heading as a second label.
+    """
+    if not statement_hint:
+        return False
+    value = " ".join(heading.lower().split())
+    patterns = {
+        "cash flow": (
+            r"\b(?:consolidated\s+)?statements?\s+of\s+cash\s+flows?\b",
+            r"\b(?:consolidated\s+)?cash\s+flows?\s+statements?\b",
+        ),
+        "balance sheet": (
+            r"\b(?:consolidated\s+)?balance\s+sheets?\b",
+            r"\b(?:consolidated\s+)?statements?\s+of\s+financial\s+position\b",
+        ),
+        "income statement": (
+            r"\b(?:consolidated\s+)?statements?\s+of\s+(?:income|operations)\b",
+            r"\b(?:consolidated\s+)?income\s+statements?\b",
+            # ``Statements of Earnings`` is a formal income-statement title
+            # used by several issuers. Keep it anchored to the source label
+            # so a note table that merely *mentions* that statement is not
+            # promoted as the statement itself.
+            r"^(?:consolidated\s+)?statements?\s+of\s+earnings\b",
+            r"^(?:consolidated\s+)?earnings\s+statements?\b",
+        ),
+    }
+    headings = (heading, associated_heading or "")
+    return any(
+        re.search(pattern, " ".join(candidate.lower().split()), re.I)
+        for candidate in headings
+        for pattern in patterns.get(statement_hint, ())
+    )
+
+
 def _intent(question: str) -> tuple[str, bool]:
     lowered = question.lower()
     calculation = bool(re.search(r"\b(ratio|margin|growth|increase|decrease|decline|change|average|turnover|calculate|calculation|percent|percentage)\b", lowered))
+    calculation = calculation or "capital-intensive" in lowered or "capital intensive" in lowered
     if re.search(r"\b(why|what drove|what led|reason for|drivers? of|caused?)\b", lowered):
         return "driver", calculation
     if re.search(r"\b(who|stakeholder|shareholder|beneficial owner|ownership)\b", lowered):

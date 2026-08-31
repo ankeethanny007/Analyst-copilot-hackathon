@@ -1,13 +1,13 @@
-from backend.app.services.answering import generate_answer_result
+from backend.app.services.answering import RetrievedEvidence, generate_answer_result
 from backend.app.services.hybrid_retrieval import _table_excerpt, rank_evidence
-from backend.app.services.question_planning import plan_question
+from backend.app.services.question_planning import is_requested_statement_heading, plan_question
 
 
 def test_direct_metric_prefers_a_consolidated_table_over_a_contents_mention() -> None:
     plan = plan_question("What was total net revenue for the three months ended March 31, 2022?")
     sections = [
-        {"id": "toc", "page_number": 2, "heading": "Table of Contents", "content": "Consolidated statements of income and total net revenue", "source_anchor": "page-2"},
-        {"id": "generic-toc", "page_number": 3, "heading": "Page 3", "content": "Table of Contents Consolidated statements of income and total net revenue", "source_anchor": "page-3"},
+        {"id": "toc", "page_number": 2, "heading": "Table of Contents", "content": "Table of Contents Beginning Page Item 1 Business 4 Item 2 Properties 16 Item 3 Legal Proceedings 17", "source_anchor": "page-2"},
+        {"id": "generic-toc", "page_number": 3, "heading": "Page 3", "content": "Table of Contents Item 5 Market for Equity Securities 20 Item 6 Selected Financial Data 24 Item 7 Management Discussion 29", "source_anchor": "page-3"},
         {"id": "statement", "page_number": 80, "heading": "Consolidated statements of income", "content": "Total net revenue was reported in the statement.", "source_anchor": "page-80"},
     ]
     tables = [
@@ -65,6 +65,30 @@ def test_question_plan_identifies_period_statement_and_driver_intent() -> None:
     assert "operating margin" in plan.phrases
 
 
+def test_income_statement_matching_accepts_statements_of_earnings() -> None:
+    plan = plan_question("What was revenue in FY2017 according to the statement of earnings?")
+
+    assert plan.statement_hint == "income statement"
+    assert is_requested_statement_heading(
+        "Consolidated Statements of Earnings",
+        plan.statement_hint,
+    )
+    assert not is_requested_statement_heading(
+        "The following table presents effects on our Consolidated Statements of Earnings",
+        plan.statement_hint,
+    )
+
+
+def test_capital_intensity_question_plans_for_disclosed_inference_inputs() -> None:
+    plan = plan_question("Is the company a capital-intensive business based on FY2022 data?")
+
+    assert plan.intent == "calculation"
+    assert plan.needs_calculation
+    assert "depreciation and amortization" in plan.phrases
+    assert "property plant and equipment" in plan.phrases
+    assert "net sales" in plan.phrases
+
+
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     plan = plan_question(
         "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "
@@ -85,3 +109,188 @@ def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     assert "Consolidated Statement of Cash Flows" in excerpt
     assert "Purchases of property, plant and equipment" in excerpt
     assert "Free cash flow" in excerpt
+
+
+def test_statement_qualified_metric_cites_the_formal_statement_not_a_non_gaap_recap() -> None:
+    question = (
+        "What is the FY2018 capital expenditure amount (in USD millions)? "
+        "Give a response relying on the cash flow statement."
+    )
+    # The UI keeps evidence in page order. Deliberately give the earlier
+    # non-GAAP recap a stronger score to prove that formal-statement
+    # eligibility, not an accidental score advantage, controls the citation.
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "page-49",
+            49,
+            "Free Cash Flow (non-GAAP measure)",
+            "Years ended December 31 | 2018 | 2017\n(Millions)\n"
+            "Purchases of property, plant and equipment | (1,577) | (1,373)",
+            999.0,
+            source_type="table",
+        ),
+        RetrievedEvidence(
+            None,
+            "page-60",
+            60,
+            "Consolidated Statements of Cash Flows",
+            "Years ended December 31 | 2018 | 2017\n(Millions)\n"
+            "Purchases of property, plant and equipment | (1,577) | (1,373)",
+            1.0,
+            source_type="table",
+        ),
+    ]
+
+    result = generate_answer_result(question, evidence)
+
+    assert result.status == "supported"
+    assert "$1,577 million" in result.content
+    assert result.citation_indices == (2,)
+
+
+def test_formal_requested_statement_table_outranks_a_non_gaap_recap() -> None:
+    plan = plan_question(
+        "What is the FY2018 capital expenditure amount (in USD millions)? "
+        "Give a response relying on the cash flow statement."
+    )
+    tables = [
+        {
+            "id": "recap",
+            "section_id": "page-49",
+            "page_number": 49,
+            "title": "Free Cash Flow (non-GAAP measure)",
+            "content": {
+                "rows": [
+                    ["Cash flow", "cash flow", "cash flow", "cash flow"],
+                    ["Capital expenditures", "(1,577)"],
+                ]
+            },
+            "source_anchor": "page-49-table-1",
+        },
+        {
+            "id": "statement",
+            "section_id": "page-60",
+            "page_number": 60,
+            "title": "Consolidated Statements of Cash Flows",
+            "content": {
+                "rows": [
+                    ["Consolidated Statements of Cash Flows"],
+                    ["Years ended December 31", "2018", "2017"],
+                    ["(Millions)"],
+                    ["Purchases of property, plant and equipment", "(1,577)", "(1,373)"],
+                ]
+            },
+            "source_anchor": "page-60-table-1",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=[], semantic_matches=[], tables=tables, facts=[])
+
+    assert next(item for item in evidence if item.page_number == 60).score > next(
+        item for item in evidence if item.page_number == 49
+    ).score
+
+
+def test_generic_period_table_uses_its_statement_section_for_preference_and_citation() -> None:
+    question = "What was gross profit in FY2017 according to the income statement?"
+    plan = plan_question(question)
+    sections = [
+        {"id": "highlights", "page_number": 25, "heading": "Five-Year Financial Highlights"},
+        {
+            "id": "earnings",
+            "page_number": 54,
+            "heading": "Consolidated Statements of Earnings",
+        },
+    ]
+    tables = [
+        {
+            "id": "highlights-table",
+            "section_id": "highlights",
+            "page_number": 25,
+            "title": "Five-Year Financial Highlights",
+            "content": {"rows": [["Gross profit", "9,440"]]},
+            "source_anchor": "page-25-table-1",
+        },
+        {
+            "id": "earnings-table",
+            "section_id": "earnings",
+            "page_number": 54,
+            "title": "Fiscal Years Ended",
+            "content": {
+                "rows": [
+                    ["Fiscal Years Ended", "2017", "2016"],
+                    ["Gross profit", "9,440", "9,191"],
+                ]
+            },
+            "source_anchor": "page-54-table-1",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[])
+    formal_statement = next(item for item in evidence if item.page_number == 54)
+    recap = next(item for item in evidence if item.page_number == 25)
+
+    assert formal_statement.heading == "Consolidated Statements of Earnings"
+    assert formal_statement.table_title == "Consolidated Statements of Earnings"
+    assert formal_statement.score > recap.score
+    result = generate_answer_result(question, evidence)
+    assert result.status == "supported"
+    assert "$9,440" in result.content
+    assert result.citation_indices == (2,)
+
+
+def test_split_contents_navigation_does_not_hide_substantive_evidence_or_leak_as_a_source_label() -> None:
+    plan = plan_question("What was net cash provided by operating activities in 2022?")
+    sections = [
+        {
+            "id": "real-toc",
+            "page_number": 2,
+            "heading": "T able of Contents",
+            "content": (
+                "T able of Contents Beginning Page PART I ITEM 1 Business 4 "
+                "ITEM 1A Risk Factors 10 ITEM 2 Properties 16 ITEM 3 Legal Proceedings 17"
+            ),
+            "source_anchor": "page-2",
+        },
+        {
+            "id": "cash-flow-page",
+            "page_number": 39,
+            "heading": "T able of Contents",
+            "content": (
+                "T able of Contents Cash Flows from Operating Activities. "
+                "Net cash provided by operating activities was $5,591 million in 2022."
+            ),
+            "source_anchor": "page-39",
+        },
+    ]
+    tables = [
+        {
+            "id": "toc-table",
+            "section_id": "real-toc",
+            "page_number": 2,
+            "title": "T able of Contents",
+            "content": {"rows": [["ITEM 1 Business", "4"], ["ITEM 2 Properties", "16"], ["ITEM 3 Legal Proceedings", "17"]]},
+            "source_anchor": "page-2-table-1",
+        },
+        {
+            "id": "cash-flow-table",
+            "section_id": "cash-flow-page",
+            "page_number": 39,
+            "title": "T able of Contents",
+            "content": {
+                "rows": [
+                    ["Year ended December 31, (Millions)", "2022", "2021"],
+                    ["Net cash provided by operating activities", "$5,591", "$7,454"],
+                ]
+            },
+            "source_anchor": "page-39-table-1",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[])
+
+    assert all(item.page_number != 2 for item in evidence)
+    assert any(item.page_number == 39 and item.source_type == "table" for item in evidence)
+    assert all(item.heading != "T able of Contents" for item in evidence)
+    assert all(item.table_title != "T able of Contents" for item in evidence if item.source_type == "table")

@@ -17,6 +17,7 @@ class FakeRepository:
         self.direct_evidence = direct_evidence or []
         self.inserts: list[tuple[str, dict]] = []
         self.updates: list[tuple[str, dict, dict]] = []
+        self.deletes: list[tuple[str, dict]] = []
 
     def topic_for_owner(self, topic_id: str, owner_id: str):
         return {"id": topic_id, "document_id": DOCUMENT_ID, "title": "Topic"} if owner_id == "owner-1" else None
@@ -51,6 +52,9 @@ class FakeRepository:
     def update(self, table: str, where: dict, row: dict):
         self.updates.append((table, where, row))
         return row
+
+    def delete(self, table: str, where: dict):
+        self.deletes.append((table, where))
 
     def documents_for_owner(self, owner_id: str):
         return [{"id": DOCUMENT_ID, "original_filename": "JPM.htm", "status": self.status}]
@@ -110,6 +114,22 @@ def test_chat_persists_immutable_source_snapshot_for_a_supported_answer(monkeypa
     assert evidence_insert["source_type"] == "table"
 
 
+def test_exact_direct_metric_uses_fast_lexical_retrieval_without_an_embedding_call(monkeypatch) -> None:
+    repository = FakeRepository()
+    client = _client(repository, monkeypatch)
+    monkeypatch.setattr(routes, "embed_question", lambda _question: (_ for _ in ()).throw(AssertionError("embedding should not run")))
+    try:
+        response = client.post(
+            f"/v1/chat-topics/{TOPIC_ID}/messages",
+            json={"content": "What was total net revenue for the three months ended March 31, 2022?"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json()["assistant_message"]["answer_status"] == "supported"
+
+
 def test_document_library_and_page_are_owner_scoped(monkeypatch) -> None:
     repository = FakeRepository()
     client = _client(repository, monkeypatch)
@@ -125,6 +145,21 @@ def test_document_library_and_page_are_owner_scoped(monkeypatch) -> None:
     assert page.status_code == 200
     assert page.json()["source_anchor"] == "page-80"
     assert missing.status_code == 404
+
+
+def test_deleting_a_chat_leaves_the_persistent_filing_untouched(monkeypatch) -> None:
+    repository = FakeRepository()
+    client = _client(repository, monkeypatch)
+    try:
+        response = client.delete(f"/v1/chat-topics/{TOPIC_ID}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 204
+    assert repository.deletes == [
+        ("chat_topics", {"id": f"eq.{TOPIC_ID}", "owner_id": "eq.owner-1"})
+    ]
+    assert repository.documents_for_owner("owner-1")[0]["id"] == DOCUMENT_ID
 
 
 def test_persisted_sources_renumber_answer_citations_in_popup_order() -> None:

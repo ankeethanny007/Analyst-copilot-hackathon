@@ -14,14 +14,30 @@ from typing import Any
 
 from .answering import RetrievedEvidence
 from .filing_retrieval import render_table, table_heading
-from .question_planning import QuestionPlan
+from .question_planning import QuestionPlan, is_requested_statement_heading
+from .source_labels import display_source_heading, is_real_table_of_contents, is_real_table_of_contents_table
 
 
 SOURCE_ORDER = {"table": 0, "xbrl": 1, "section": 2}
+_GENERIC_PERIOD_TABLE_HEADING = re.compile(
+    r"^(?:(?:fiscal\s+)?years?|(?:three|six|nine|twelve)\s+months?)\s+ended\b",
+    re.I,
+)
 
 
 def _normalise(value: str) -> str:
     return " ".join(value.lower().split())
+
+
+def _is_generic_period_table_heading(heading: str) -> bool:
+    """Return whether a table title only describes its reporting period.
+
+    Formal statements sometimes persist their real title as the enclosing
+    section heading while the table itself begins with a period row such as
+    ``Fiscal Years Ended``.  That period row must not hide the statement
+    identity during evidence ranking.
+    """
+    return bool(_GENERIC_PERIOD_TABLE_HEADING.match(_normalise(heading)))
 
 
 def _concept_words(concept: str) -> str:
@@ -155,12 +171,13 @@ def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], sem
         content = section.get("content") or ""
         if not section_id or not content:
             continue
-        heading = section.get("heading") or "Filing section"
-        # Some HTML filings assign generic headings such as "Page 46" to
-        # contents pages.  Do not let their broad financial vocabulary become
-        # a plausible-looking but non-evidentiary source.
-        if _normalise(heading) == "table of contents" or _normalise(content).startswith("table of contents"):
+        raw_heading = section.get("heading") or ""
+        # A split EDGAR navigation link (``T able of Contents``) appears on
+        # many substantive pages.  Suppress only pages whose body actually
+        # has a navigational contents-list structure.
+        if is_real_table_of_contents(content):
             continue
+        heading = display_source_heading(raw_heading)
         score = _term_score(content, heading, plan) + semantic.get(section_id, 0.0)
         if score <= 0:
             continue
@@ -179,7 +196,13 @@ def section_evidence(plan: QuestionPlan, sections: Iterable[dict[str, Any]], sem
     return sorted(candidates, key=lambda item: item.score, reverse=True)[:limit]
 
 
-def table_evidence(plan: QuestionPlan, tables: Iterable[dict[str, Any]], limit: int = 4) -> list[RetrievedEvidence]:
+def table_evidence(
+    plan: QuestionPlan,
+    tables: Iterable[dict[str, Any]],
+    *,
+    section_by_id: dict[str, dict[str, Any]] | None = None,
+    limit: int = 4,
+) -> list[RetrievedEvidence]:
     candidates: list[RetrievedEvidence] = []
     for table in tables:
         section_id = table.get("section_id")
@@ -190,17 +213,23 @@ def table_evidence(plan: QuestionPlan, tables: Iterable[dict[str, Any]], limit: 
         rendered = render_table(table)
         if not rendered:
             continue
-        generic_title = (table.get("title") or "").strip().lower()
-        if (
-            generic_title == "table of contents"
-            or rendered.lstrip().lower().startswith("table of contents")
-            or re.search(r"\bbeginning\s+page\b.*\bitem\s+\d", rendered, re.I)
-            or (re.fullmatch(r"page\s+\d+", generic_title) and re.search(r"\bitem\s+\d\b", rendered, re.I))
-        ):
+        if is_real_table_of_contents_table(table.get("title"), rendered):
             # A contents page is useful for navigation, never as financial
             # evidence.  Its broad vocabulary otherwise creates false hits.
             continue
         heading = table_heading(table, rendered)
+        section = (section_by_id or {}).get(section_id, {})
+        associated_heading = display_source_heading(section.get("heading"), "")
+        formal_statement = is_requested_statement_heading(
+            heading,
+            plan.statement_hint,
+            associated_heading,
+        )
+        if formal_statement and _is_generic_period_table_heading(heading) and associated_heading:
+            # Use the section's actual financial-statement label for both the
+            # source UI and the answer layer's formal-statement eligibility
+            # guard. The table label alone may contain only a period heading.
+            heading = associated_heading
         score = _term_score(rendered, heading, plan)
         for phrase in plan.phrases:
             if len(phrase.split()) >= 2 and re.search(rf"(?:^|\n)\s*{re.escape(phrase)}\b", rendered, re.I):
@@ -213,6 +242,13 @@ def table_evidence(plan: QuestionPlan, tables: Iterable[dict[str, Any]], limit: 
             # Prefer the firm-wide statement/financial highlights over a
             # business-line table when the question did not name a segment.
             score += 18.0
+        if formal_statement:
+            # A question that expressly asks for a financial statement should
+            # draw its cited value from that formal statement, not from an
+            # MD&A recap or a non-GAAP reconciliation that happens to repeat
+            # the same metric.  The answer layer applies the corresponding
+            # eligibility guard once the statement also contains the metric.
+            score += 42.0
         if plan.intent == "direct" and re.search(r"\b(segment|markets|international|consumer|commercial|corporate)\b", heading_lower):
             score -= 8.0
         if plan.statement_hint and plan.statement_hint in _normalise(rendered):
@@ -232,7 +268,10 @@ def table_evidence(plan: QuestionPlan, tables: Iterable[dict[str, Any]], limit: 
                 source_type="table",
                 source_anchor=table.get("source_anchor"),
                 table_id=table.get("id"),
-                table_title=table.get("title") or heading,
+                # Snapshot the resolved display title instead of the raw
+                # extraction label.  This also prevents a historical
+                # ``T able of Contents`` title from reappearing on reload.
+                table_title=heading,
             )
         )
     return sorted(candidates, key=lambda item: item.score, reverse=True)[:limit]
@@ -267,7 +306,7 @@ def fact_evidence(plan: QuestionPlan, facts: Iterable[dict[str, Any]], sections:
                 None,
                 section_id,
                 int(page_number),
-                section.get("heading") or f"Inline XBRL fact: {concept}",
+                display_source_heading(section.get("heading"), f"Inline XBRL fact: {concept}"),
                 content,
                 score,
                 source_type="xbrl",
@@ -290,7 +329,7 @@ def rank_evidence(
     section_rows = list(sections)
     section_map = {row["id"]: row for row in section_rows if row.get("id")}
     candidates = [
-        *table_evidence(plan, tables),
+        *table_evidence(plan, tables, section_by_id=section_map),
         *section_evidence(plan, section_rows, semantic_matches),
         *fact_evidence(plan, facts, section_map),
     ]

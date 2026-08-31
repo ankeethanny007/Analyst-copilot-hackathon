@@ -99,8 +99,9 @@ class SupabaseRepository:
     def delete(self, table: str, where: dict[str, str]) -> None:
         """Delete rows selected by explicit server-side filters.
 
-        This is used only to replace derived, reproducible processing output;
-        the immutable original filing and the user's messages remain intact.
+        Callers must scope destructive operations precisely. Processing uses it
+        for reproducible derived rows; chat deletion uses it only for an
+        owner-scoped topic, leaving its immutable document intact.
         """
         self._request(f"/{table}?{urlencode(where)}", "DELETE", prefer="return=minimal")
 

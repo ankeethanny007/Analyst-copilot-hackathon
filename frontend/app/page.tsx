@@ -108,6 +108,18 @@ function topicDocument(topic: Topic): TopicDocument | undefined {
   return Array.isArray(topic.documents) ? topic.documents[0] : topic.documents ?? undefined;
 }
 
+function usableEvidenceHeading(value: string | null | undefined) {
+  const cleaned = value?.replace(/\s+/g, " ").trim();
+  if (!cleaned) return undefined;
+  // EDGAR can split the persistent navigation label into individual inline
+  // spans, producing labels such as `T able of Contents` on substantive
+  // pages. It is never useful evidence context, so use the neutral fallback
+  // below instead of displaying it in a compact source link or modal.
+  const compact = cleaned.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (compact === "tableofcontents" || /^page\s+\d+$/i.test(cleaned)) return undefined;
+  return cleaned;
+}
+
 function evidenceLocation(evidence: Evidence) {
   const section = Array.isArray(evidence.document_sections) ? evidence.document_sections[0] : evidence.document_sections;
   return {
@@ -115,7 +127,9 @@ function evidenceLocation(evidence: Evidence) {
     // New evidence rows snapshot their original table/section label. Prefer
     // that immutable label so a reprocessed filing cannot turn old sources
     // into a generic page heading after a chat reload.
-    heading: evidence.table_title ?? evidence.section_heading ?? section?.heading ?? evidence.heading ?? "Filing section",
+    heading: [evidence.table_title, evidence.section_heading, section?.heading, evidence.heading]
+      .map(usableEvidenceHeading)
+      .find(Boolean) ?? "Filing section",
   };
 }
 
@@ -351,6 +365,7 @@ export default function Home() {
   const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
   const [creatingDocumentId, setCreatingDocumentId] = useState<string | null>(null);
+  const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
   const [retryingDocumentId, setRetryingDocumentId] = useState<string | null>(null);
   const [processing, setProcessing] = useState<Record<string, ProcessingSnapshot>>({});
 
@@ -566,6 +581,25 @@ export default function Home() {
     }
   }
 
+  async function deleteTopic(topic: Topic) {
+    if (!window.confirm(`Delete the chat “${topic.title}”? The filing and its processed evidence will remain available.`)) return;
+    setDeletingTopicId(topic.id);
+    setError(null);
+    try {
+      await request<void>(`/chat-topics/${topic.id}`, { method: "DELETE" });
+      const remaining = topics.filter(item => item.id !== topic.id);
+      setTopics(remaining);
+      if (activeTopicId === topic.id) {
+        const nextTopic = remaining.find(item => item.document_id === topic.document_id) ?? remaining[0] ?? null;
+        setActiveTopicId(nextTopic?.id ?? null);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to delete chat.");
+    } finally {
+      setDeletingTopicId(null);
+    }
+  }
+
   async function createTopic(filing: FilingWithTopics) {
     if (isBlocked(processing[filing.id]?.document.status ?? filing.status)) return;
     setCreatingDocumentId(filing.id);
@@ -677,8 +711,23 @@ export default function Home() {
           {filings.map(filing => {
             const filingStatus = processing[filing.id]?.document.status ?? filing.status;
             const filingIsActive = activeTopic?.document_id === filing.id;
+            // Topics are returned newest-first. The filing-card action should
+            // therefore reopen the analyst's most recent conversation, while
+            // the individual topic rows remain available for explicit choice.
+            const latestTopic = filing.topics[0];
+            const openLatestTopic = () => {
+              if (!latestTopic) return;
+              setError(null);
+              setActiveTopicId(latestTopic.id);
+            };
             return (
               <section className={`filing-group ${filingIsActive ? "active" : ""}`} key={filing.id}>
+                <button
+                  className="filing-open-button"
+                  aria-label={latestTopic ? `Open latest chat for ${filenameStem(filing.original_filename)}` : `No chats available for ${filenameStem(filing.original_filename)}`}
+                  disabled={!latestTopic}
+                  onClick={openLatestTopic}
+                />
                 <div className="filing-title-row">
                   <div title={filing.original_filename}>
                     <span className="filing-name">{filenameStem(filing.original_filename)}</span>
@@ -688,10 +737,22 @@ export default function Home() {
                 </div>
                 <div className="topic-list">
                   {filing.topics.map(topic => (
-                    <button className={`topic-button ${activeTopicId === topic.id ? "active" : ""}`} data-testid="topic" data-topic-id={topic.id} data-document-id={filing.id} key={topic.id} onClick={() => { setError(null); setActiveTopicId(topic.id); }}>
-                      <span className="topic-dot" aria-hidden="true" />
-                      <span className="topic-title">{topic.title}</span>
-                    </button>
+                    <div className="topic-row" key={topic.id}>
+                      <button className={`topic-button ${activeTopicId === topic.id ? "active" : ""}`} data-testid="topic" data-topic-id={topic.id} data-document-id={filing.id} onClick={() => { setError(null); setActiveTopicId(topic.id); }}>
+                        <span className="topic-dot" aria-hidden="true" />
+                        <span className="topic-title">{topic.title}</span>
+                      </button>
+                      <button
+                        className="delete-topic-button"
+                        data-testid="delete-topic"
+                        aria-label={`Delete chat ${topic.title}`}
+                        title="Delete chat"
+                        disabled={deletingTopicId === topic.id}
+                        onClick={() => void deleteTopic(topic)}
+                      >
+                        {deletingTopicId === topic.id ? "…" : "×"}
+                      </button>
+                    </div>
                   ))}
                 </div>
                 <button className="new-chat-button" onClick={() => void createTopic(filing)} disabled={creatingDocumentId === filing.id || isBlocked(filingStatus)}>

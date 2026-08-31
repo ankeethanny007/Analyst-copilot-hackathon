@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .source_labels import display_source_heading
+
 
 ALIASES = {
     "revenue": ("revenue", "revenues", "sales", "net sales", "total sales"),
@@ -30,8 +32,7 @@ def table_heading(table: dict[str, Any], content: str) -> str:
     match = re.search(r"consolidated\s+(?:statements?\s+of\s+(?:cash\s+flows?|income|operations)|balance\s+sheets?)", content, re.I)
     if match:
         return match.group(0).title().replace(" Of ", " of ")
-    title = (table.get("title") or "").strip()
-    return title if title and title.lower() != "table of contents" else "Financial table"
+    return display_source_heading(table.get("title"), "Financial table")
 
 
 def relevant_tables(question: str, tables: list[dict[str, Any]], limit: int = 3) -> list[tuple[dict[str, Any], str, int]]:

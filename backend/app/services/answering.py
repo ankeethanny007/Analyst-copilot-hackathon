@@ -6,8 +6,11 @@ import os
 import json
 import re
 import ssl
+import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import certifi
@@ -15,6 +18,11 @@ import certifi
 
 ABSTENTION = "Not found in this filing."
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+# The normal transport timeout remains suitable for embeddings and ingestion.
+# Answer generation sets a shorter, request-scoped timeout inside its bounded
+# retry loop so one stalled provider request cannot freeze the chat for several
+# minutes.
+_ANSWER_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("answer_timeout_override", default=None)
 
 
 @dataclass
@@ -100,10 +108,20 @@ def generate_answer_result(question: str, evidence: list[RetrievedEvidence]) -> 
         "Match the FinanceBench-style answer format: for information extraction, give the exact requested value or fact in the first sentence and cite it as [S#]. Cite every factual sentence with one or more [S#] labels. "
         "For numerical or logical reasoning (including growth, margins, or changes), give a one-sentence conclusion followed by a `Calculation:` line that states only the inputs and arithmetic supported by sources. "
         "For drivers of a change, identify only the causes explicitly discussed in the supplied management discussion or notes, and cite each source. "
+        "For an analytical judgment framed as `based on` filing data (for example, capital intensity), make a clearly labelled inference from disclosed values and a simple stated calculation; do not present that inference as a quoted management conclusion. "
+        "Lead with the metric or conclusion label (never a bare number). Preserve the requested unit: label a turnover or other multiple with `x`, and label percentages with `%`. Keep the response under 180 words and use at most three bullets after the conclusion or calculation. "
+        "Reply exactly `Not found in this filing.` if the supplied excerpts do not contain every requested fact, period, unit, and calculation input needed for the answer; for a driver question, abstain unless they contain an explicit management explanation. "
+        "If an excerpt contains an explicit requested metric or driver under a neutral heading such as `Filing section`, it is still valid filing evidence: answer from it rather than abstaining. "
         "Do not restate the question, do not quote a source label that was not supplied, and do not claim a requested period or unit unless it appears in a source."
     )
     try:
-        response = _openai_post("/responses", {"model": os.getenv("OPENAI_MODEL", "gpt-5"), "instructions": instructions, "input": f"Question: {question}\n\nSources:\n{sources}"})
+        response = _answer_with_retry(
+            {
+                "model": os.getenv("OPENAI_MODEL", "gpt-5"),
+                "instructions": instructions,
+                "input": f"Question: {question}\n\nSources:\n{sources}",
+            }
+        )
     except Exception:
         # Distinguish an unavailable answer service from an evidence-backed
         # abstention.  The UI can offer a retry without incorrectly teaching
@@ -136,6 +154,63 @@ def _response_text(response: dict) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
+def _answer_with_retry(payload: dict) -> dict:
+    """Retry a bounded number of transient answer-service failures.
+
+    Retrieval has already produced document-scoped evidence by this point. A
+    temporary provider failure should not be presented as a filing-level
+    absence of evidence, and a short retry is much less disruptive than
+    requiring the user to resend a long analytical question.
+    """
+    def setting(name: str, default: int) -> int:
+        try:
+            return max(1, int(os.getenv(name, str(default))))
+        except ValueError:
+            return default
+
+    # Keep a transient retry, but bound the total time spent on one visible
+    # chat turn.  Previously every exception could trigger three 90-second
+    # requests, which looked like a hung UI and retried permanent 401/400
+    # configuration failures as well.
+    try:
+        retries = max(0, int(os.getenv("ANSWER_MAX_RETRIES", "1")))
+    except ValueError:
+        retries = 1
+    max_total_seconds = setting("ANSWER_MAX_TOTAL_SECONDS", 100)
+    request_timeout_seconds = setting("ANSWER_REQUEST_TIMEOUT_SECONDS", 60)
+    deadline = time.monotonic() + max_total_seconds
+
+    def retryable(error: Exception) -> bool:
+        if isinstance(error, HTTPError):
+            return error.code in {408, 409, 425, 429} or 500 <= error.code < 600
+        if isinstance(error, (URLError, TimeoutError, ConnectionError)):
+            return True
+        # This preserves retry coverage for the temporary transport wrapper
+        # used in tests without retrying permanent configuration/model errors.
+        return isinstance(error, RuntimeError) and bool(re.search(r"\b(?:temporary|transient|timeout|connection)\b", str(error), re.I))
+
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        timeout_token = _ANSWER_TIMEOUT_OVERRIDE.set(min(float(request_timeout_seconds), remaining))
+        try:
+            return _openai_post("/responses", payload)
+        except Exception as error:  # caller maps a final failure to a retryable UI state
+            last_error = error
+            if attempt >= retries or not retryable(error):
+                break
+            pause = min(float(2**attempt), 4.0, max(0.0, deadline - time.monotonic()))
+            if pause <= 0:
+                break
+            time.sleep(pause)
+        finally:
+            _ANSWER_TIMEOUT_OVERRIDE.reset(timeout_token)
+    assert last_error is not None
+    raise last_error
+
+
 def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[str, str]:
     """Compatibility wrapper used by direct unit tests and local scripts."""
     result = generate_answer_result(question, evidence)
@@ -151,7 +226,7 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
     # Do not treat a time phrase such as "three months ended March" as a
     # metric.  The former implementation did exactly that and could return a
     # nearby year/date fragment as a confident financial answer.
-    from .question_planning import plan_question
+    from .question_planning import is_requested_statement_heading, plan_question
 
     plan = plan_question(question)
     candidates = [
@@ -226,10 +301,33 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
                 return header
         return []
 
+    def contains_requested_metric(item: RetrievedEvidence) -> bool:
+        return any(
+            re.search(rf"\b{re.escape(metric)}\b", item.excerpt, re.IGNORECASE)
+            for metric in candidates
+        )
+
     # Evidence is numbered in stable page order for the UI, but a formal
-    # consolidated statement may occur later than an overview table. Search
-    # the highest-ranked source first and keep its original [S#] label.
-    ordered_evidence = sorted(enumerate(evidence, start=1), key=lambda pair: (pair[1].score, pair[1].source_type == "table"), reverse=True)
+    # consolidated statement may occur later than an overview table. If the
+    # user explicitly requested a statement and that statement contains the
+    # requested metric, make it the only eligible direct-metric source. This
+    # avoids citing an MD&A/non-GAAP recap merely because it repeats the same
+    # number. Inline XBRL facts are also eligible when their mapped section
+    # heading is the requested formal statement.
+    indexed_evidence = list(enumerate(evidence, start=1))
+    statement_sources = [
+        pair
+        for pair in indexed_evidence
+        if pair[1].source_type in {"table", "xbrl"}
+        and is_requested_statement_heading(pair[1].heading, plan.statement_hint)
+        and contains_requested_metric(pair[1])
+    ]
+    eligible_evidence = statement_sources or indexed_evidence
+    ordered_evidence = sorted(
+        eligible_evidence,
+        key=lambda pair: (pair[1].score, pair[1].source_type == "table"),
+        reverse=True,
+    )
     for item_index, item in ordered_evidence:
         lines = [line.strip() for line in item.excerpt.splitlines() if line.strip()] or [" ".join(item.excerpt.split())]
         for line_index, line in enumerate(lines):
@@ -298,5 +396,6 @@ def _openai_post(path: str, body: dict) -> dict:
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=90, context=SSL_CONTEXT) as response:
+    timeout = _ANSWER_TIMEOUT_OVERRIDE.get() or 90
+    with urlopen(request, timeout=timeout, context=SSL_CONTEXT) as response:
         return json.loads(response.read())

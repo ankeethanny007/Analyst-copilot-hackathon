@@ -10,6 +10,8 @@ from typing import Iterable
 
 from bs4 import BeautifulSoup, Tag
 
+from .source_labels import is_table_of_contents_label
+
 PAGE_BREAK = re.compile(r"page-break-after\s*:\s*always", re.I)
 HEADING = re.compile(r"^(item\s+\d+[a-z]?\.?|[A-Z][A-Z\s,&—–()\-]{8,})$", re.I)
 FINANCIAL_STATEMENT = re.compile(
@@ -140,12 +142,22 @@ def _page_heading(soup: BeautifulSoup, fallback: str) -> str:
         if node.find_parent("table") or node.find("table"):
             continue
         text = _repair_display_label(normalized_text(node))
-        if text.lower() == "table of contents":
+        # EDGAR places this navigation link at the start of many substantive
+        # pages.  Its letters can be split by inline tags (``T able``), so an
+        # exact string comparison would incorrectly make it the page heading.
+        if is_table_of_contents_label(text):
             continue
+        title = text.rstrip(":").strip()
+        colon_heading = (
+            text.endswith(":")
+            and 4 <= len(title) <= 100
+            and len(title.split()) <= 12
+            and bool(re.fullmatch(r"[A-Za-z0-9&,'’()/\-\s]+", title))
+        )
         if 4 <= len(text) <= 180 and FINANCIAL_STATEMENT.search(text):
             return text
-        if 4 <= len(text) <= 120 and HEADING.match(text):
-            return text
+        if 4 <= len(text) <= 120 and (HEADING.match(text) or colon_heading):
+            return title if colon_heading else text
     return fallback
 
 
@@ -255,7 +267,7 @@ def _extract_facts(soup: BeautifulSoup, contexts: dict[str, tuple[str | None, st
 
 def _is_generic_table_title(title: str | None) -> bool:
     value = (title or "").strip().lower()
-    if not value or value == "table of contents" or value.startswith(("part i", "part ii", "page")):
+    if not value or is_table_of_contents_label(value) or value.startswith(("part i", "part ii", "page")):
         return True
     return bool(re.fullmatch(r"(?:\(?in [^)]+\)?|(?:as of |three months ended |year ended ).*)", value))
 
@@ -272,10 +284,17 @@ def _table_heading_before(table: Tag) -> str | None:
         if node.find_parent("table") or node.find("table"):
             continue
         text = _repair_display_label(normalized_text(node))
-        if not text or len(text) > 180 or text.lower() == "table of contents":
+        if not text or len(text) > 180 or is_table_of_contents_label(text):
             continue
-        if FINANCIAL_STATEMENT.search(text) or HEADING.match(text) or re.match(r"^(?:note|item)\s+\d+", text, re.I):
-            return text
+        title = text.rstrip(":").strip()
+        colon_heading = (
+            text.endswith(":")
+            and 4 <= len(title) <= 100
+            and len(title.split()) <= 12
+            and bool(re.fullmatch(r"[A-Za-z0-9&,'’()/\-\s]+", title))
+        )
+        if FINANCIAL_STATEMENT.search(text) or HEADING.match(text) or re.match(r"^(?:note|item)\s+\d+", text, re.I) or colon_heading:
+            return title if colon_heading else text
     return None
 
 
