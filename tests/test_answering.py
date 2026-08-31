@@ -121,6 +121,36 @@ def test_explicit_zero_fallback_uses_the_requested_formal_statement() -> None:
     assert answer.endswith("[S1]")
 
 
+def test_inventory_turnover_uses_same_year_ending_inventory() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "balance",
+            130,
+            "Consolidated Balance Sheets",
+            "2022 | 2021\nInventory | 1,055 | 604",
+            1.0,
+            source_type="table",
+        ),
+        RetrievedEvidence(
+            None,
+            "income",
+            131,
+            "Consolidated Statements of Operations",
+            "2022 | 2021 | 2020\nTotal cost of sales | ( 10,069 ) | ( 8,430 ) | ( 6,967 )",
+            1.0,
+            source_type="table",
+        ),
+    ]
+
+    answer, status = generate_answer("Calculate inventory turnover ratio for FY2022.", evidence)
+
+    assert status == "supported"
+    assert "9.5x" in answer
+    assert "10,069 / ending inventory 1,055" in answer
+    assert "[S1][S2]" in answer
+
+
 def test_direct_metric_converts_a_source_million_value_to_requested_billions() -> None:
     evidence = [RetrievedEvidence(None, "section", 57, "Consolidated Balance Sheet", "(Dollars in millions) 2018 | Property, plant and equipment — net | $ | 8,700", 1.0)]
 

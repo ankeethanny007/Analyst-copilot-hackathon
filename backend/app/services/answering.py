@@ -89,6 +89,9 @@ def generate_answer_result(question: str, evidence: list[RetrievedEvidence]) -> 
     growth = _direct_growth_answer(question, evidence)
     if growth:
         return _result(growth, "supported", evidence)
+    inventory_turnover = _inventory_turnover_answer(question, evidence)
+    if inventory_turnover:
+        return _result(inventory_turnover, "supported", evidence)
     # A question asking what caused or drove a result must explain the
     # supported management discussion, not seize the first nearby numeric
     # table value. Direct extraction remains a fast, exact path only for a
@@ -216,6 +219,66 @@ def generate_answer(question: str, evidence: list[RetrievedEvidence]) -> tuple[s
     """Compatibility wrapper used by direct unit tests and local scripts."""
     result = generate_answer_result(question, evidence)
     return result.content, result.status
+
+
+def _inventory_turnover_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
+    """Calculate the FinanceBench inventory-turnover convention.
+
+    The benchmark defines the annual ratio as total cost of sales divided by
+    the same-year ending inventory unless the question supplies another
+    formula. Keep this deterministic path restricted to the explicit ratio
+    label and two structured statement rows.
+    """
+    if "inventory turnover" not in question.lower():
+        return None
+    years = list(dict.fromkeys(re.findall(r"(?:FY\s*)?((?:19|20)\d{2})\b", question, re.I)))
+    if not years:
+        return None
+    year = years[-1]
+
+    def row_value(item: RetrievedEvidence, label: re.Pattern[str]) -> Decimal | None:
+        lines = [line.strip() for line in item.excerpt.splitlines() if line.strip()]
+        header_years: list[str] = []
+        for line in lines[:6]:
+            found = re.findall(r"\b(?:19|20)\d{2}\b", line)
+            if found:
+                header_years.extend(found)
+        header_years = list(dict.fromkeys(header_years))
+        if year not in header_years:
+            return None
+        for line in lines:
+            if not label.search(line):
+                continue
+            values = [
+                Decimal(value.replace(",", ""))
+                for value in re.findall(r"(?<![\w,])([\d][\d,]*(?:\.\d+)?)(?![\dA-Za-z])", line)
+                if not re.fullmatch(r"(?:19|20)\d{2}", value.replace(",", ""))
+            ]
+            if len(values) >= len(header_years):
+                return abs(values[header_years.index(year)])
+        return None
+
+    inventory: tuple[int, Decimal] | None = None
+    cost_of_sales: tuple[int, Decimal] | None = None
+    for index, item in enumerate(evidence, start=1):
+        if item.source_type != "table":
+            continue
+        if inventory is None:
+            value = row_value(item, re.compile(r"^inventor(?:y|ies)(?:,?\s+net)?\s*\|", re.I))
+            if value is not None:
+                inventory = (index, value)
+        if cost_of_sales is None:
+            value = row_value(item, re.compile(r"^total\s+cost\s+of\s+sales\s*\|", re.I))
+            if value is not None:
+                cost_of_sales = (index, value)
+    if inventory is None or cost_of_sales is None or inventory[1] == 0:
+        return None
+    ratio = cost_of_sales[1] / inventory[1]
+    citations = "".join(f"[S{index}]" for index in dict.fromkeys((inventory[0], cost_of_sales[0])))
+    return (
+        f"FY{year} inventory turnover: {ratio:.1f}x. {citations}\n\n"
+        f"Calculation: total cost of sales {cost_of_sales[1]:,.0f} / ending inventory {inventory[1]:,.0f} = {ratio:.1f}x."
+    )
 
 
 def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:

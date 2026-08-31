@@ -133,6 +133,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "acquisitions": ("business acquisitions", "acquisitions and divestitures", "completed the acquisition"),
     "days payable outstanding": ("accounts payable", "cost of sales", "inventories", "inventory"),
     "dpo": ("accounts payable", "cost of sales", "inventories", "inventory"),
+    "inventory turnover": ("total cost of sales", "cost of sales", "inventory"),
     "key agenda": ("other events", "supplemental indenture", "substitute issuer", "assumption of covenants"),
     "filing purpose": ("other events", "supplemental indenture", "substitute issuer", "assumption of covenants"),
     # Analysts commonly describe organic growth as growth excluding M&A.

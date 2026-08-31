@@ -256,6 +256,50 @@ def test_excluding_m_and_a_retrieves_the_organic_segment_sales_bridge() -> None:
     assert evidence[0].page_number == 25
 
 
+def test_inventory_turnover_retrieves_cost_of_sales_and_inventory() -> None:
+    plan = plan_question("How many times was inventory turned over in FY2022? Calculate inventory turnover ratio.")
+    sections = [
+        {"id": "balance", "page_number": 130, "heading": "Consolidated Balance Sheets"},
+        {"id": "income", "page_number": 131, "heading": "Consolidated Statements of Operations"},
+    ]
+    tables = [
+        {
+            "id": "balance-table",
+            "section_id": "balance",
+            "page_number": 130,
+            "title": "Consolidated Balance Sheets",
+            "content": {"rows": [["2022", "2021"], ["Inventory", "1,055", "604"]]},
+        },
+        {
+            "id": "income-table",
+            "section_id": "income",
+            "page_number": 131,
+            "title": "Consolidated Statements of Operations",
+            "content": {"rows": [["2022", "2021"], ["Total cost of sales", "10,069", "8,430"]]},
+        },
+    ]
+    for index in range(4):
+        tables.append(
+            {
+                "id": f"regional-{index}",
+                "section_id": "income",
+                "page_number": 100 + index,
+                "title": "Regional operating-margin driver",
+                "content": {
+                    "rows": [["2022"], [f"Region {index} increase driven by lower cost of sales", "10"]]
+                },
+            }
+        )
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[], limit=6)
+
+    assert "total cost of sales" in plan.phrases
+    retrieved_pages = {item.page_number for item in evidence if item.source_type == "table"}
+    assert {130, 131}.issubset(retrieved_pages)
+    income_source = next(item for item in evidence if item.source_type == "table" and item.page_number == 131)
+    assert "Total cost of sales" in income_source.excerpt
+
+
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     plan = plan_question(
         "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "
