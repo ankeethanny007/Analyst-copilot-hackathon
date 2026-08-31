@@ -84,6 +84,46 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "profit": ("net income", "net earnings", "income", "earnings", "profit"),
     "margin": ("margin", "gross profit", "operating income", "operating margin"),
     "cash flow": ("cash flows", "operating activities", "cash from operations"),
+    # These ratios need inputs from more than one financial statement.  Keep
+    # the component line items in the retrieval plan rather than expecting a
+    # filing to use the analyst's exact ratio label.
+    "operating cash flow ratio": (
+        "cash from operations",
+        "net cash provided by operating activities",
+        "total current liabilities",
+    ),
+    "free cash flow": (
+        "free cash flow",
+        "cash from operations",
+        "net cash provided by operating activities",
+        "purchases of property plant and equipment",
+        "capital expenditures",
+        "net income",
+    ),
+    "free cashflow": (
+        "free cash flow",
+        "cash from operations",
+        "net cash provided by operating activities",
+        "purchases of property plant and equipment",
+        "capital expenditures",
+        "net income",
+    ),
+    "free cash flow conversion": (
+        "free cash flow",
+        "cash from operations",
+        "net cash provided by operating activities",
+        "purchases of property plant and equipment",
+        "capital expenditures",
+        "net income",
+    ),
+    "free cashflow conversion": (
+        "free cash flow",
+        "cash from operations",
+        "net cash provided by operating activities",
+        "purchases of property plant and equipment",
+        "capital expenditures",
+        "net income",
+    ),
     "shareholder": ("beneficial ownership", "principal shareholders", "stockholders", "shareholders"),
     "stakeholder": ("beneficial ownership", "principal shareholders", "stockholders", "shareholders"),
     "holder": ("beneficial ownership", "principal shareholders", "stockholders", "shareholders"),
@@ -114,6 +154,8 @@ METRIC_PATTERNS = (
     "current assets",
     "quick ratio",
     "fixed asset turnover",
+    "operating cash flow ratio",
+    "free cash flow conversion",
     "return on assets",
 )
 
@@ -207,7 +249,7 @@ def is_requested_statement_heading(
 
 def _intent(question: str) -> tuple[str, bool]:
     lowered = question.lower()
-    calculation = bool(re.search(r"\b(ratio|margin|growth|increase|decrease|decline|change|average|turnover|calculate|calculation|percent|percentage)\b", lowered))
+    calculation = bool(re.search(r"\b(ratio|margin|growth|increase|decrease|decline|change|average|turnover|conversion|calculate|calculation|percent|percentage)\b", lowered))
     calculation = calculation or "capital-intensive" in lowered or "capital intensive" in lowered
     if re.search(r"\b(why|what drove|what led|reason for|drivers? of|caused?)\b", lowered):
         return "driver", calculation

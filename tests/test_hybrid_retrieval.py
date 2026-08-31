@@ -89,6 +89,20 @@ def test_capital_intensity_question_plans_for_disclosed_inference_inputs() -> No
     assert "net sales" in plan.phrases
 
 
+def test_cash_flow_ratio_and_conversion_questions_plan_for_statement_inputs() -> None:
+    liquidity = plan_question(
+        "What is the FY2017 operating cash flow ratio? It is cash from operations divided by total current liabilities."
+    )
+    conversion = plan_question("Does the company have improving free cashflow conversion as of FY2022?")
+
+    assert liquidity.intent == "calculation"
+    assert "cash from operations" in liquidity.phrases
+    assert "total current liabilities" in liquidity.phrases
+    assert conversion.intent == "calculation"
+    assert "purchases of property plant and equipment" in conversion.phrases
+    assert "net income" in conversion.phrases
+
+
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     plan = plan_question(
         "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "
