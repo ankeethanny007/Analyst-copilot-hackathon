@@ -129,6 +129,8 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "holder": ("beneficial ownership", "principal shareholders", "stockholders", "shareholders"),
     "debt": ("debt", "notes", "borrowings", "long-term debt"),
     "liquidity": ("liquidity", "cash and cash equivalents", "current assets", "current liabilities"),
+    "acquisition": ("business acquisition", "acquisitions and divestitures", "completed the acquisition"),
+    "acquisitions": ("business acquisitions", "acquisitions and divestitures", "completed the acquisition"),
 }
 
 

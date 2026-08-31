@@ -103,6 +103,35 @@ def test_cash_flow_ratio_and_conversion_questions_plan_for_statement_inputs() ->
     assert "net income" in conversion.phrases
 
 
+def test_acquisition_question_prioritizes_the_acquisition_note_over_generic_year_matches() -> None:
+    plan = plan_question("What major acquisitions were completed in FY2023, FY2022 and FY2021?")
+    sections = [
+        {
+            "id": "generic-years",
+            "page_number": 27,
+            "heading": "Shareholder Return Performance",
+            "content": "Shareholder returns for 2023, 2022 and 2021 are presented below.",
+            "source_anchor": "page-27",
+        },
+        {
+            "id": "acquisitions",
+            "page_number": 64,
+            "heading": "Note 5 - Acquisitions and Divestitures",
+            "content": (
+                "Year ended June 30, 2023 Acquisitions. The Company completed the acquisition "
+                "of a flexible packaging manufacturer and a medical device packaging site."
+            ),
+            "source_anchor": "page-64",
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=[], facts=[], limit=1)
+
+    assert len(evidence) == 1
+    assert evidence[0].page_number == 64
+    assert "acquisitions and divestitures" in plan.phrases
+
+
 def test_long_statement_table_keeps_the_specific_requested_metric_row() -> None:
     plan = plan_question(
         "What is the FY2018 capital expenditure amount (in USD millions) for 3M? "

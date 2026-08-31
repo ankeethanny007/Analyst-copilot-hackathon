@@ -321,6 +321,36 @@ def _mark_facts_for_page_mapping(body: Tag) -> None:
         fact[FACT_KEY_ATTRIBUTE] = f"fact-{index}"
 
 
+def _filing_body(root: BeautifulSoup) -> Tag | BeautifulSoup:
+    """Select the actual filing from a multi-document SEC HTML download.
+
+    Some EDGAR downloads concatenate the filing index, an interactive-data
+    viewer, the submitted Inline XBRL document, and exhibits. BeautifulSoup's
+    ``root.body`` returns only the first index body, which contains filenames
+    but not the reported event. Prefer the concise body that carries an Inline
+    XBRL ``DocumentType`` fact; ordinary single-document filings retain their
+    only body unchanged.
+    """
+    bodies = root.find_all("body")
+    if len(bodies) <= 1:
+        return bodies[0] if bodies else root
+
+    filing_candidates: list[Tag] = []
+    for body in bodies:
+        document_type = body.find(
+            lambda tag: isinstance(tag, Tag)
+            and _is_inline_fact(tag)
+            and str(tag.get("name") or "").lower().endswith("documenttype")
+        )
+        if document_type:
+            filing_candidates.append(body)
+    if filing_candidates:
+        # The interactive viewer can duplicate the same facts alongside its
+        # controls. The submitted filing body is the concise candidate.
+        return min(filing_candidates, key=lambda body: len(normalized_text(body)))
+    return bodies[0]
+
+
 def _chunk(content: str, page_number: int, section_ordinal: int, size: int = 1200, overlap: int = 180) -> list[Chunk]:
     chunks: list[Chunk] = []
     for start in range(0, len(content), size - overlap):
@@ -336,10 +366,10 @@ def parse_html_xbrl(path: Path) -> FilingExtract:
     """Parse a filing locally; persistence and embedding are deliberately separate."""
     source = path.read_text(encoding="utf-8", errors="ignore")
     root = BeautifulSoup(source, "html.parser")
-    body = root.body or root
+    body = _filing_body(root)
     # Inline XBRL contexts normally live inside ix:header. Capture them before
     # removing that non-rendered header from the page text.
-    contexts = _context_dates(root)
+    contexts = _context_dates(body)
     header = body.find("ix:header")
     if header:
         header.decompose()
@@ -355,7 +385,7 @@ def parse_html_xbrl(path: Path) -> FilingExtract:
                 # Preserve the old id-based mapping for callers passing in a
                 # pre-split document without our in-memory fact marker.
                 fact_pages[fact["id"]] = page_number
-    facts = _extract_facts(root, contexts, fact_pages)
+    facts = _extract_facts(body, contexts, fact_pages)
 
     pages: list[Page] = []
     sections: list[Section] = []

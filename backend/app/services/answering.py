@@ -299,6 +299,25 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
             header = re.findall(r"\b(?:19|20)\d{2}\b", lines[offset])
             if len(header) >= 2:
                 return header
+        # Extracted HTML tables can render each header cell on its own line,
+        # and a requested metric may be dozens of rows below that header.
+        # Find the last annual-period heading before the metric and collect
+        # its consecutive year cells rather than defaulting to column one.
+        candidates: list[list[str]] = []
+        for offset, line in enumerate(lines[:line_index]):
+            if not re.search(r"\b(?:years? ended|as of|december 31)\b", line, re.I):
+                continue
+            years: list[str] = []
+            for header_line in lines[offset : min(line_index, offset + 10)]:
+                found = re.findall(r"\b(?:19|20)\d{2}\b", header_line)
+                if found:
+                    years.extend(found)
+                elif years:
+                    break
+            if len(years) >= 2:
+                candidates.append(list(dict.fromkeys(years)))
+        if candidates:
+            return candidates[-1]
         return []
 
     def contains_requested_metric(item: RetrievedEvidence) -> bool:
@@ -338,9 +357,11 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
                 values = amounts(line[match.end() :])
                 if not values:
                     # Some compact table renderings lose newlines. Fall back
-                    # to the rest of the evidence only after finding the true
-                    # metric label, not an arbitrary question n-gram.
-                    values = amounts(item.excerpt[match.end() :])
+                    # to rows after the matched metric only. ``match.end()``
+                    # is relative to this line, not the full excerpt; applying
+                    # it to ``item.excerpt`` starts near the document header
+                    # and can silently return an unrelated earlier value.
+                    values = amounts(" ".join(lines[line_index + 1 :]))
                 if not values:
                     continue
                 value = values[0]
@@ -361,19 +382,61 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
 
 def _direct_growth_answer(question: str, evidence: list[RetrievedEvidence]) -> str | None:
     """Calculate a year-over-year change only from a single cited table."""
-    if not re.search(r"\b(growth|increase|decrease|decline|change)\b", question, re.I):
+    lowered_question = " ".join(question.lower().split())
+    metric_aliases = {
+        "gross revenue": ("net sales", "revenue", "revenues"),
+        "total revenue": ("net sales", "revenue", "revenues"),
+        "net sales": ("net sales",),
+        "revenue": ("net sales", "revenue", "revenues"),
+        "gross profit": ("gross profit",),
+    }
+    requested_metric: str | None = None
+    for metric in metric_aliases:
+        escaped = re.escape(metric)
+        if re.search(rf"\b(?:growth|increase|decrease|decline|change)\s+(?:in|of)\s+(?:\w+\s+){{0,2}}{escaped}\b", lowered_question):
+            requested_metric = metric
+            break
+        if re.search(rf"\b{escaped}\s+(?:growth|increase|decrease|decline|change)\b", lowered_question):
+            requested_metric = metric
+            break
+    # A formula can mention a change in one of its inputs (for example,
+    # inventory inside a DPO calculation).  That must not route the whole
+    # question through the revenue-growth shortcut.
+    if requested_metric is None:
         return None
-    years = sorted(re.findall(r"(?:FY\s*)?(20\d{2})\b", question, re.I), reverse=True)
+    years = sorted(set(re.findall(r"(?:FY\s*)?(20\d{2})\b", question, re.I)), reverse=True)
     if len(years) < 2:
         return None
+    allowed_labels = metric_aliases[requested_metric]
     for index, item in enumerate(evidence, start=1):
         text = " ".join(item.excerpt.split())
         if not all(year in text for year in years):
             continue
-        match = re.search(r"\b(net sales|revenues?|gross profit)\b\s*(?:\([^)]*\))?(?:\s*\|\s*\$?)*\s*\(?([\d][\d,]*)\)?(?:\s*\|\s*\$?)*\s*\(?([\d][\d,]*)\)?", text, re.I)
+        labels = "|".join(re.escape(label) for label in allowed_labels)
+        match = re.search(rf"\b({labels})\b", text, re.I)
         if not match:
             continue
-        latest, prior = (int(value.replace(",", "")) for value in match.group(2, 3))
+        values = [
+            int(value.replace(",", ""))
+            for value in re.findall(r"(?<![\w,])\$?\s*([\d][\d,]*)(?![\dA-Za-z])", text[match.end() :])
+            if not re.fullmatch(r"(?:19|20)\d{2}", value.replace(",", ""))
+        ]
+        if len(values) < 2:
+            continue
+        # SEC tables often contain three to five annual columns.  Map the
+        # requested periods to the nearest header immediately before the
+        # metric instead of assuming the first two cells are the requested
+        # years.  This is critical for selected-financial-data tables ordered
+        # oldest-to-newest.
+        header_years = re.findall(r"\b(?:19|20)\d{2}\b", text[: match.start()])
+        header_years = header_years[-min(len(header_years), len(values)) :]
+        year_values = dict(zip(header_years, values[: len(header_years)]))
+        if years[0] in year_values and years[1] in year_values:
+            latest, prior = year_values[years[0]], year_values[years[1]]
+        elif len(values) == 2:
+            latest, prior = values
+        else:
+            continue
         if prior == 0:
             continue
         growth = (latest - prior) / prior * 100
