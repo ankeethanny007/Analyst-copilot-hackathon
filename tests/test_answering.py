@@ -97,6 +97,30 @@ def test_growth_calculation_prefers_the_requested_formal_statement() -> None:
     assert answer.endswith("[S2]")
 
 
+def test_explicit_zero_fallback_uses_the_requested_formal_statement() -> None:
+    evidence = [
+        RetrievedEvidence(
+            None,
+            "income",
+            131,
+            "Consolidated Statements of Operations",
+            "2022 | 2021 | 2020\nRevenue | 12,617 | 11,141 | 9,660\nGeneral and administrative expenses | 207 | 166 | 165",
+            1.0,
+            source_type="table",
+        )
+    ]
+
+    answer, status = generate_answer(
+        "What restructuring costs are directly outlined in the income statement for FY2022? "
+        "If restructuring costs are not explicitly outlined then state 0.",
+        evidence,
+    )
+
+    assert status == "supported"
+    assert "$0" in answer
+    assert answer.endswith("[S1]")
+
+
 def test_direct_metric_converts_a_source_million_value_to_requested_billions() -> None:
     evidence = [RetrievedEvidence(None, "section", 57, "Consolidated Balance Sheet", "(Dollars in millions) 2018 | Property, plant and equipment — net | $ | 8,700", 1.0)]
 

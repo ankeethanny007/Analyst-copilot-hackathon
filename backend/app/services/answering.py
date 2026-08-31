@@ -335,13 +335,24 @@ def _direct_metric_answer(question: str, evidence: list[RetrievedEvidence]) -> s
     # number. Inline XBRL facts are also eligible when their mapped section
     # heading is the requested formal statement.
     indexed_evidence = list(enumerate(evidence, start=1))
-    statement_sources = [
+    formal_statement_sources = [
         pair
         for pair in indexed_evidence
         if pair[1].source_type in {"table", "xbrl"}
         and is_requested_statement_heading(pair[1].heading, plan.statement_hint)
-        and contains_requested_metric(pair[1])
     ]
+    statement_sources = [pair for pair in formal_statement_sources if contains_requested_metric(pair[1])]
+    # Some benchmarks explicitly define absence from an enumerated financial
+    # statement as zero.  This is safe only when the user requests that exact
+    # fallback and a formal requested statement was retrieved; otherwise an
+    # unmatched metric must continue through the evidence-first answer path.
+    explicit_zero_if_absent = bool(
+        re.search(r"\bif\b[^.?!]{0,100}\bnot\b[^.?!]{0,60}\b(?:state|report|answer)\s+(?:it\s+(?:as|is)\s+)?0\b", question, re.I)
+    )
+    if explicit_zero_if_absent and formal_statement_sources and not statement_sources:
+        source_index = formal_statement_sources[0][0]
+        label = candidates[0] if candidates else "requested costs"
+        return f"Answer: {label[0].upper() + label[1:]} explicitly presented in the requested statement were $0. [S{source_index}]"
     eligible_evidence = statement_sources or indexed_evidence
     ordered_evidence = sorted(
         eligible_evidence,

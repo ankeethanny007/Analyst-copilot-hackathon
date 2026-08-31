@@ -150,6 +150,7 @@ METRIC_PATTERNS = (
     "gross profit",
     "gross margin",
     "operating income",
+    "restructuring costs",
     "operating margin",
     "net income",
     "net earnings",
