@@ -12,7 +12,8 @@ from bs4 import BeautifulSoup, Tag
 
 from .source_labels import is_table_of_contents_label
 
-PAGE_BREAK = re.compile(r"page-break-after\s*:\s*always", re.I)
+PAGE_BREAK_AFTER = re.compile(r"(?:page-break-after|break-after)\s*:\s*(?:always|page)", re.I)
+PAGE_BREAK_BEFORE = re.compile(r"(?:page-break-before|break-before)\s*:\s*(?:always|page)", re.I)
 HEADING = re.compile(r"^(item\s+\d+[a-z]?\.?|[A-Z][A-Z\s,&—–()\-]{8,})$", re.I)
 FINANCIAL_STATEMENT = re.compile(
     r"consolidated\s+(?:statements?\s+of\s+(?:cash\s+flows?|income|operations|comprehensive\s+income|changes\s+in\s+(?:stockholders['’]?|shareholders['’]?)\s+equity)|balance\s+sheets?)",
@@ -127,10 +128,17 @@ def _is_inline_fact(tag: Tag) -> bool:
 
 
 def _parts_after_page_breaks(body: Tag) -> Iterable[str]:
-    """Split both SEC conventions: styled `<hr>` and styled empty paragraphs."""
+    """Split SEC HTML at CSS page breaks, regardless of break direction.
+
+    EDGAR filings use both ``page-break-after`` and ``page-break-before``.
+    Treating only the former silently collapses some whole filings into a
+    single page, which makes an otherwise correct source impossible to locate.
+    """
     marker = "__ANALYST_COPILOT_PAGE_BREAK__"
-    for node in body.find_all(lambda tag: isinstance(tag, Tag) and PAGE_BREAK.search(tag.get("style", ""))):
+    for node in body.find_all(lambda tag: isinstance(tag, Tag) and PAGE_BREAK_AFTER.search(tag.get("style", ""))):
         node.insert_after(marker)
+    for node in body.find_all(lambda tag: isinstance(tag, Tag) and PAGE_BREAK_BEFORE.search(tag.get("style", ""))):
+        node.insert_before(marker)
     return (part for part in body.decode_contents().split(marker))
 
 

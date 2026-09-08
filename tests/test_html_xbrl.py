@@ -57,6 +57,28 @@ def test_display_labels_repair_inline_xbrl_word_splits_without_editing_evidence_
     assert _repair_display_label("RESULTS OF OPERATI ONS") == "RESULTS OF OPERATIONS"
 
 
+def test_html_page_break_before_creates_page_addressable_evidence(tmp_path: Path) -> None:
+    filing = tmp_path / "before-break.htm"
+    filing.write_text(
+        """
+        <html><body>
+          <div>Cover page</div>
+          <div style="page-break-before: always">Consolidated Statements of Income</div>
+          <table><tr><td>Revenue</td><td>100</td></tr></table>
+          <div style="break-before: page">Consolidated Balance Sheets</div>
+          <table><tr><td>Total assets</td><td>200</td></tr></table>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+
+    extract = parse_html_xbrl(filing)
+
+    assert len(extract.pages) == 3
+    assert extract.tables[0].page_number == 2
+    assert extract.tables[1].page_number == 3
+
+
 def test_sec_multi_document_download_selects_the_submitted_filing_body(tmp_path: Path) -> None:
     filing = tmp_path / "multi-document.htm"
     filing.write_text(
