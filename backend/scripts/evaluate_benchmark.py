@@ -74,8 +74,8 @@ def main() -> int:
     parser.add_argument(
         "--page-offset",
         type=int,
-        default=0,
-        help="Subtract this offset from displayed source pages before comparison (use 1 when a benchmark stores zero-based PDF pages but the HTML parser displays page 1 first).",
+        default=1,
+        help="Subtract this offset from displayed source pages before comparison. FinanceBench stores zero-based PDF pages while the HTML parser displays page 1 first, so the default is 1; pass 0 for a one-based benchmark.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Report eligible questions without sending chat requests")
     args = parser.parse_args()
