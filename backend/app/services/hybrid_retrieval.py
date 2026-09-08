@@ -40,6 +40,42 @@ def _is_generic_period_table_heading(heading: str) -> bool:
     return bool(_GENERIC_PERIOD_TABLE_HEADING.match(_normalise(heading)))
 
 
+def _asks_for_financial_statements(question: str) -> bool:
+    """Whether the question explicitly confines its inputs to filed statements.
+
+    A calculation can name more than one statement (for example, balance
+    sheet *and* P&L).  ``QuestionPlan.statement_hint`` is intentionally
+    ``None`` in that case because there is no single statement to prefer.
+    We still must prefer the named formal statements over a selected-data or
+    MD&A recap that happens to contain the same numbers.
+    """
+    value = question.lower()
+    return any(
+        marker in value
+        for marker in (
+            "balance sheet",
+            "statement of financial position",
+            "income statement",
+            "statement of income",
+            "statement of operations",
+            "statement of earnings",
+            "p&l",
+            "cash flow statement",
+            "statement of cash flows",
+        )
+    )
+
+
+def _is_formal_financial_statement_heading(*headings: str) -> bool:
+    """Recognize formal statement labels without choosing one statement type."""
+    patterns = (
+        r"\b(?:consolidated\s+)?balance\s+sheets?\b",
+        r"\b(?:consolidated\s+)?statements?\s+of\s+(?:financial\s+position|income|operations|earnings|cash\s+flows?)\b",
+        r"\b(?:consolidated\s+)?(?:income|earnings|cash\s+flows?)\s+statements?\b",
+    )
+    return any(re.search(pattern, _normalise(heading), re.I) for heading in headings for pattern in patterns)
+
+
 def _concept_words(concept: str) -> str:
     tail = concept.split(":")[-1]
     tail = re.sub(r"([a-z])([A-Z])", r"\1 \2", tail)
@@ -231,6 +267,7 @@ def table_evidence(
             plan.statement_hint,
             associated_heading,
         )
+        named_formal_statement = _is_formal_financial_statement_heading(heading, associated_heading)
         if formal_statement and _is_generic_period_table_heading(heading) and associated_heading:
             # Use the section's actual financial-statement label for both the
             # source UI and the answer layer's formal-statement eligibility
@@ -255,6 +292,11 @@ def table_evidence(
             # MD&A recap or a non-GAAP reconciliation that happens to repeat
             # the same metric.  The answer layer applies the corresponding
             # eligibility guard once the statement also contains the metric.
+            score += 42.0
+        elif _asks_for_financial_statements(plan.question) and named_formal_statement:
+            # Cross-statement calculations deliberately have no single
+            # ``statement_hint``.  Their inputs still belong in the actual
+            # filed statements, rather than an MD&A/selected-data summary.
             score += 42.0
         if plan.intent == "direct" and re.search(r"\b(segment|markets|international|consumer|commercial|corporate)\b", heading_lower):
             score -= 8.0
@@ -340,6 +382,17 @@ def rank_evidence(
         *section_evidence(plan, section_rows, semantic_matches),
         *fact_evidence(plan, facts, section_map),
     ]
+    if _asks_for_financial_statements(plan.question):
+        formal_sources = [
+            item
+            for item in candidates
+            if _is_formal_financial_statement_heading(item.heading)
+        ]
+        if formal_sources:
+            # An explicit instruction to use a statement is a source-scope
+            # constraint, not merely a ranking preference. Omit selected-data
+            # and MD&A duplicates that can otherwise receive a citation.
+            candidates = formal_sources
     candidates.sort(key=lambda item: item.score, reverse=True)
     selected: list[RetrievedEvidence] = []
     seen: set[tuple[str, str, str]] = set()

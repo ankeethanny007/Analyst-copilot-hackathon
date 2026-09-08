@@ -171,6 +171,35 @@ def test_dpo_question_retrieves_both_balance_sheet_and_income_statement_inputs()
     assert {item.page_number for item in evidence if item.source_type == "table"} == {38, 40}
 
 
+def test_cross_statement_calculation_prefers_filed_statements_over_selected_data() -> None:
+    plan = plan_question(
+        "Using the balance sheet and P&L statement, calculate FY2020 asset turnover from revenue and average total assets."
+    )
+    sections = [
+        {"id": "selected", "page_number": 30, "heading": "Selected Financial Data"},
+        {"id": "income", "page_number": 67, "heading": "Consolidated Statements of Earnings"},
+        {"id": "balance", "page_number": 69, "heading": "Consolidated Balance Sheets"},
+    ]
+    tables = [
+        {
+            "id": "selected-table", "section_id": "selected", "page_number": 30, "title": "Selected Financial Data",
+            "content": {"rows": [["2020", "2019"], ["Net sales", "65,398", "59,812"], ["Total assets", "50,710", "47,528"]]},
+        },
+        {
+            "id": "income-table", "section_id": "income", "page_number": 67, "title": "Consolidated Statements of Earnings",
+            "content": {"rows": [["2020", "2019"], ["Total net sales", "65,398", "59,812"]]},
+        },
+        {
+            "id": "balance-table", "section_id": "balance", "page_number": 69, "title": "Consolidated Balance Sheets",
+            "content": {"rows": [["2020", "2019"], ["Total assets", "50,710", "47,528"]]},
+        },
+    ]
+
+    evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[], limit=2)
+
+    assert {item.page_number for item in evidence} == {67, 69}
+
+
 def test_filing_agenda_question_uses_narrative_answering_path() -> None:
     plan = plan_question("What was the key agenda of the 8-K filing?")
 
@@ -398,9 +427,7 @@ def test_formal_requested_statement_table_outranks_a_non_gaap_recap() -> None:
 
     evidence = rank_evidence(plan, sections=[], semantic_matches=[], tables=tables, facts=[])
 
-    assert next(item for item in evidence if item.page_number == 60).score > next(
-        item for item in evidence if item.page_number == 49
-    ).score
+    assert [item.page_number for item in evidence] == [60]
 
 
 def test_generic_period_table_uses_its_statement_section_for_preference_and_citation() -> None:
@@ -440,15 +467,14 @@ def test_generic_period_table_uses_its_statement_section_for_preference_and_cita
 
     evidence = rank_evidence(plan, sections=sections, semantic_matches=[], tables=tables, facts=[])
     formal_statement = next(item for item in evidence if item.page_number == 54)
-    recap = next(item for item in evidence if item.page_number == 25)
 
     assert formal_statement.heading == "Consolidated Statements of Earnings"
     assert formal_statement.table_title == "Consolidated Statements of Earnings"
-    assert formal_statement.score > recap.score
+    assert all(item.page_number != 25 for item in evidence)
     result = generate_answer_result(question, evidence)
     assert result.status == "supported"
     assert "$9,440" in result.content
-    assert result.citation_indices == (2,)
+    assert result.citation_indices == (1,)
 
 
 def test_split_contents_navigation_does_not_hide_substantive_evidence_or_leak_as_a_source_label() -> None:
