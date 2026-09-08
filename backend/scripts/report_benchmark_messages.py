@@ -130,7 +130,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-base", default="http://127.0.0.1:8000", help="FastAPI origin, without /v1")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--page-offset", type=int, default=0)
+    parser.add_argument(
+        "--page-offset",
+        type=int,
+        default=1,
+        help="Subtract this offset from displayed source pages before comparison. FinanceBench uses zero-based PDF pages; pass 0 for a one-based benchmark.",
+    )
     parser.add_argument("--since", help="Only use user messages created at/after this ISO-8601 timestamp")
     parser.add_argument("--require-all", action="store_true", help="Fail when a filing/topic/question is absent from the UI history")
     return parser.parse_args()
